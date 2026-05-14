@@ -1,0 +1,110 @@
+{
+  "device": {
+    "name": "cpu",
+    "backend": "cpu",
+    "description": "CPU fallback"
+  },
+  "mesh": {
+    "name": "demo_cube",
+    "vertices": 8,
+    "faces": 12
+  },
+  "lods": {
+    "10": {
+      "gaussians": 10,
+      "memory_bytes": 320
+    },
+    "25": {
+      "gaussians": 25,
+      "memory_bytes": 800
+    },
+    "50": {
+      "gaussians": 50,
+      "memory_bytes": 1600
+    }
+  },
+  "render_performance": {
+    "10": {
+      "seconds": 0.004475000001548324,
+      "fps": 223.46368707352087,
+      "memory_bytes": 320,
+      "gaussians": 10
+    },
+    "25": {
+      "seconds": 0.007762100001855288,
+      "fps": 128.83111526017203,
+      "memory_bytes": 800,
+      "gaussians": 25
+    },
+    "50": {
+      "seconds": 0.014138300000922754,
+      "fps": 70.72986143558516,
+      "memory_bytes": 1600,
+      "gaussians": 50
+    }
+  },
+  "quality_by_lod": {
+    "10": {
+      "mse": 0.04129139706492424,
+      "psnr": 13.84140422833143
+    },
+    "25": {
+      "mse": 0.053381964564323425,
+      "psnr": 12.726054473385995
+    },
+    "50": {
+      "mse": 0.0533224493265152,
+      "psnr": 12.730899098103396
+    }
+  },
+  "transition": {
+    "frames": 4,
+    "popping_score": 0.30099259987473487,
+    "weights": [
+      {
+        "frame": 0,
+        "distance": 3.0,
+        "mesh": 1.0,
+        "gaussian_lods": {
+          "10": 0.0,
+          "25": 0.0,
+          "50": 0.0
+        }
+      },
+      {
+        "frame": 1,
+        "distance": 2.5851850509643555,
+        "mesh": 0.8813890832893814,
+        "gaussian_lods": {
+          "10": 0.11861091671061863,
+          "25": 0.0,
+          "50": 0.0
+        }
+      },
+      {
+        "frame": 2,
+        "distance": 1.814814805984497,
+        "mesh": 0.0006519323669847976,
+        "gaussian_lods": {
+          "10": 0.11837022967423091,
+          "25": 0.7754239379845677,
+          "50": 0.10555389997421669
+        }
+      },
+      {
+        "frame": 3,
+        "distance": 1.4000000953674316,
+        "mesh": 0.0,
+        "gaussian_lods": {
+          "10": 0.0,
+          "25": 0.11548953962669285,
+          "50": 0.8845104603733072
+        }
+      }
+    ]
+  },
+  "outputs": {
+    "video": "data\\outputs_cube_smoke\\transition.gif",
+    "frames": "data\\outputs_cube_smoke\\frames"
+  }
+}

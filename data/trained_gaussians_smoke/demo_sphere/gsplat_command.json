@@ -1,0 +1,18 @@
+{
+  "command": [
+    "C:\\Users\\jerne\\miniconda3\\python.exe",
+    "..\\gsplat\\examples\\simple_trainer.py",
+    "default",
+    "--data_dir",
+    "data\\generated_datasets_smoke\\demo_sphere",
+    "--data_factor",
+    "1",
+    "--result_dir",
+    "data\\trained_gaussians_smoke\\demo_sphere",
+    "--max_steps",
+    "100"
+  ],
+  "cwd": "..\\gsplat",
+  "result_dir": "data\\trained_gaussians_smoke\\demo_sphere",
+  "executed": false
+}

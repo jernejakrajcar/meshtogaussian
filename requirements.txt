@@ -1,0 +1,22 @@
+numpy>=1.24
+torch>=2.0
+PyYAML>=6.0
+imageio>=2.31
+imageio-ffmpeg>=0.4
+matplotlib>=3.7
+opencv-python>=4.8
+trimesh>=4.0
+pyrender>=0.1.45
+pytest>=7.0
+tqdm>=4.66
+fastapi>=0.110
+uvicorn>=0.27
+python-multipart>=0.0.9
+httpx>=0.27
+
+# Optional Windows AMD acceleration. Install only if it matches your PyTorch version.
+# torch-directml
+
+# Optional accelerated Gaussian splatting backends. These are not required for v1.
+# gsplat
+# diff-gaussian-rasterization

@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mesh-to-Gaussian Visualizer</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <aside class="sidebar">
+        <h1>Mesh-to-Gaussian</h1>
+
+        <label>
+          Source model
+          <select id="modelSelect"></select>
+        </label>
+
+        <label>
+          Upload OBJ/PLY/GLTF/GLB
+          <input id="uploadInput" type="file" accept=".obj,.ply,.gltf,.glb" />
+        </label>
+
+        <button id="prepareButton" type="button">Prepare Viewer Data</button>
+
+        <label>
+          Gaussian source
+          <select id="representationSelect">
+            <option value="trained">Trained splats</option>
+            <option value="initialized">Initialized preview</option>
+          </select>
+        </label>
+
+        <label>
+          Trained Gaussian PLY
+          <select id="trainedSelect"></select>
+        </label>
+
+        <label>
+          View mode
+          <select id="modeSelect">
+            <option value="transition">Pipeline transition</option>
+            <option value="both">Mesh + selected LOD</option>
+            <option value="mesh">Mesh</option>
+            <option value="gaussian">Selected Gaussian LOD</option>
+          </select>
+        </label>
+
+        <label>
+          Transition position <span id="transitionValue">0%</span>
+          <input id="transitionSlider" type="range" min="0" max="1" step="0.01" value="0" />
+        </label>
+
+        <label>
+          Gaussian LOD
+          <select id="lodSelect"></select>
+        </label>
+
+        <label>
+          Point size
+          <input id="pointSize" type="range" min="0.01" max="0.15" step="0.005" value="0.045" />
+        </label>
+
+        <label>
+          Gaussian opacity
+          <input id="opacity" type="range" min="0.1" max="1" step="0.05" value="0.9" />
+        </label>
+
+        <pre id="status">Loading models...</pre>
+      </aside>
+
+      <section class="viewport">
+        <div id="viewer"></div>
+      </section>
+    </main>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/"
+        }
+      }
+    </script>
+    <script type="module" src="/static/main.js"></script>
+  </body>
+</html>

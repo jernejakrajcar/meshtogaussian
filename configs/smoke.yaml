@@ -1,0 +1,75 @@
+device:
+  preferred: cpu
+  allow_directml: false
+
+mesh:
+  path: null
+  demo_shape: uv_sphere
+  color: [0.78, 0.64, 0.42]
+
+camera:
+  train_radius: 2.4
+  train_views: 4
+  elevations: [0.0]
+  fov_y_degrees: 45.0
+
+demo:
+  far_radius: 3.0
+  near_radius: 1.4
+  frames: 4
+  azimuth_degrees: 35.0
+  elevation_degrees: 10.0
+
+render:
+  image_size: [64, 64]
+  gaussian_backend: torch
+  background: [0.04, 0.045, 0.055]
+  mesh_backend: software
+
+lod:
+  counts: [10, 25, 50]
+  max_gaussians: 50
+  seed: 7
+  low_lod_scale_boost: 1.8
+
+transition:
+  mesh_fade_start: 2.8
+  mesh_fade_end: 1.8
+  lod_ranges:
+    "10": [3.0, 2.3]
+    "25": [2.5, 1.8]
+    "50": [2.0, 1.2]
+
+training:
+  enabled: false
+
+outputs:
+  root: data/outputs_smoke
+  save_lods: true
+  save_frames: true
+  video_fps: 4
+
+progress:
+  enabled: true
+  verbose: true
+
+web:
+  source_dirs: ["data/source", "data/meshes"]
+  upload_dir: "data/source/uploads"
+  trained_dirs: ["data/trained_gaussians"]
+  preview_lod_counts: [10, 25, 50]
+
+training_dataset:
+  root: data/generated_datasets_smoke
+  radius: 2.4
+  elevations: [0.0]
+  views_per_elevation: 4
+  initial_point_count: 50
+
+gsplat:
+  repo: ../gsplat
+  python_executable: null
+  steps: 100
+  data_factor: 1
+  result_dir: data/trained_gaussians
+  export_iteration: latest
