@@ -78,3 +78,4 @@ gsplat:
   data_factor: 1
   result_dir: data/trained_gaussians
   export_iteration: latest
+  extra_args: []

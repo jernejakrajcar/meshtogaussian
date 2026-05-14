@@ -77,6 +77,14 @@ After installing and configuring `gsplat`, run training directly:
 python scripts/train_gaussians_from_mesh.py --mesh data/meshes/my_model.glb --config configs/default.yaml --run-trainer
 ```
 
+On the NVIDIA/CUDA machine, first run:
+
+```powershell
+python scripts/check_cuda_training_env.py --config configs/default.yaml
+```
+
+See [CUDA_TRAINING.md](docs/CUDA_TRAINING.md) for the full transfer/training workflow.
+
 Expected flow:
 
 1. Synthetic images and camera files are written to `data/generated_datasets/<model_name>/`.

@@ -9,7 +9,7 @@ from src.geometry.cameras import CameraRig
 from src.geometry.mesh_loader import MeshAsset
 from src.render.mesh_renderer import SyntheticViewRenderer
 from src.training.dataset_export import export_synthetic_colmap_dataset
-from src.training.gsplat_runner import build_gsplat_command
+from src.training.gsplat_runner import build_gsplat_command, check_cuda_training_environment
 
 
 def test_synthetic_dataset_export_writes_colmap_files(tmp_path: Path) -> None:
@@ -75,7 +75,16 @@ def test_gsplat_command_points_at_simple_trainer(tmp_path: Path) -> None:
         result_dir=tmp_path / "result",
         python_executable="python",
         steps=100,
+        extra_args=["--save_ply"],
     )
     assert "simple_trainer.py" in command.argv[1]
     assert "--data_dir" in command.argv
     assert "--max_steps" in command.argv
+    assert "--save_ply" in command.argv
+
+
+def test_cuda_preflight_reports_missing_repo(tmp_path: Path) -> None:
+    status = check_cuda_training_environment(tmp_path / "missing_gsplat")
+    assert "cuda_available" in status
+    assert status["gsplat_repo_ok"] is False
+    assert any("simple_trainer.py" in problem for problem in status["problems"])

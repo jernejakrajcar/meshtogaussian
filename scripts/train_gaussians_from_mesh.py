@@ -13,7 +13,12 @@ from src.geometry.mesh_loader import MeshAsset
 from src.pipeline.run_pipeline import image_size_from_config, tuple3
 from src.render.mesh_renderer import SyntheticViewRenderer
 from src.training.dataset_export import export_synthetic_colmap_dataset
-from src.training.gsplat_runner import build_gsplat_command, run_gsplat_training
+from src.training.gsplat_runner import (
+    build_gsplat_command,
+    check_cuda_training_environment,
+    find_latest_trained_ply,
+    run_gsplat_training,
+)
 from src.geometry.cameras import CameraRig
 
 
@@ -24,6 +29,7 @@ def main() -> None:
     parser.add_argument("--dataset-out", default=None)
     parser.add_argument("--result-out", default=None)
     parser.add_argument("--run-trainer", action="store_true", help="Actually execute gsplat after generating the dataset.")
+    parser.add_argument("--skip-cuda-check", action="store_true", help="Do not fail early when CUDA is unavailable.")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -65,12 +71,28 @@ def main() -> None:
         python_executable=gsplat_cfg.get("python_executable"),
         steps=int(gsplat_cfg.get("steps", 3000)),
         data_factor=int(gsplat_cfg.get("data_factor", 1)),
+        extra_args=[str(arg) for arg in gsplat_cfg.get("extra_args", [])],
     )
+    if args.run_trainer and not args.skip_cuda_check:
+        status = check_cuda_training_environment(gsplat_cfg.get("repo", "../gsplat"))
+        if status["problems"]:
+            print("CUDA/gsplat preflight failed:")
+            for problem in status["problems"]:
+                print(f"- {problem}")
+            raise SystemExit(1)
+
     summary = run_gsplat_training(command, execute=args.run_trainer)
     print("gsplat command:")
     print(command.as_shell_string())
     if not args.run_trainer:
         print("Training was not executed. Add --run-trainer after installing/configuring gsplat.")
+    else:
+        trained_ply = find_latest_trained_ply(result_dir)
+        if trained_ply is None:
+            print("Training finished, but no .ply was found under the result directory.")
+            print("If your gsplat version saves only checkpoints, export/convert the checkpoint to PLY before using the viewer.")
+        else:
+            print(f"Latest trained PLY: {trained_ply}")
     print(f"Command summary: {result_dir / 'gsplat_command.json'}")
 
 
