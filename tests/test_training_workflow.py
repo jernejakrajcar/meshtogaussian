@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import struct
 from pathlib import Path
 
 import numpy as np
 
+from src.conversion.mesh2splat_runner import (
+    Mesh2SplatConfig,
+    build_mesh2splat_command,
+    convert_mesh_to_glb,
+)
 from src.gaussian.trained_io import build_trained_lods, load_trained_gaussian_ply
 from src.geometry.cameras import CameraRig
 from src.geometry.mesh_loader import MeshAsset
@@ -66,6 +72,60 @@ def test_trained_gaussian_ascii_ply_loader_and_lods(tmp_path: Path) -> None:
     assert np.isfinite(cloud.color.detach().cpu().numpy()).all()
     lods = build_trained_lods(cloud, [2, 4])
     assert {name: lod.count for name, lod in lods.items()} == {"2": 2, "4": 4}
+    capped = build_trained_lods(cloud, [10])
+    assert capped["10"].count == 4
+
+
+def test_trained_gaussian_binary_ply_loader(tmp_path: Path) -> None:
+    ply = tmp_path / "trained_binary.ply"
+    header = "\n".join(
+        [
+            "ply",
+            "format binary_little_endian 1.0",
+            "element vertex 2",
+            "property float x",
+            "property float y",
+            "property float z",
+            "property float opacity",
+            "property float scale_0",
+            "property float scale_1",
+            "property float scale_2",
+            "property float f_dc_0",
+            "property float f_dc_1",
+            "property float f_dc_2",
+            "end_header",
+            "",
+        ]
+    ).encode("ascii")
+    rows = [
+        (0.0, 0.0, 0.0, 0.9, 0.02, 0.02, 0.02, 1.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0, 0.5, 0.03, 0.03, 0.03, 0.0, 1.0, 0.0),
+    ]
+    ply.write_bytes(header + b"".join(struct.pack("<10f", *row) for row in rows))
+    cloud = load_trained_gaussian_ply(ply)
+    assert cloud.count == 2
+    assert np.allclose(cloud.scale.detach().cpu().numpy().reshape(-1), [0.02, 0.03], atol=1.0e-6)
+
+
+def test_mesh2splat_command_uses_headless_contract(tmp_path: Path) -> None:
+    config = Mesh2SplatConfig(
+        executable=tmp_path / "Mesh2Splat.exe",
+        output_dir=tmp_path / "out",
+        glb_cache_dir=tmp_path / "glb",
+        density=1.25,
+    )
+    command = build_mesh2splat_command(config, tmp_path / "input.glb", tmp_path / "output.ply")
+    assert command[:2] == [str(config.executable), "--headless"]
+    assert "--input" in command
+    assert "--output" in command
+    assert "--density" in command
+    assert "1.25" in command
+
+
+def test_mesh2splat_glb_input_bypasses_conversion(tmp_path: Path) -> None:
+    glb = tmp_path / "model.glb"
+    glb.write_bytes(b"glTF")
+    assert convert_mesh_to_glb(glb, tmp_path / "cache") == glb
 
 
 def test_gsplat_command_points_at_simple_trainer(tmp_path: Path) -> None:

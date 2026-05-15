@@ -62,6 +62,7 @@ web:
   source_dirs: ["data/source", "data/meshes"]
   upload_dir: "data/source/uploads"
   trained_dirs: ["data/trained_gaussians"]
+  mesh2splat_lod_dirs: ["data/mesh2splats"]
   preview_lod_counts: [10, 100, 500, 5000, 20000]
 
 training_dataset:
@@ -78,4 +79,13 @@ gsplat:
   data_factor: 1
   result_dir: data/trained_gaussians
   export_iteration: latest
+  extra_args: []
+
+mesh2splat:
+  executable: C:/Users/Uporabnik/Documents/faks/magisterij/1.letnik/nrg/mesh2splat/bin/Release/Mesh2Splat.exe
+  working_dir: C:/Users/Uporabnik/Documents/faks/magisterij/1.letnik/nrg/mesh2splat/bin/Release
+  output_dir: data/trained_gaussians/mesh2splat
+  glb_cache_dir: data/converted_glb
+  density: 1.0
+  timeout_seconds: 300
   extra_args: []

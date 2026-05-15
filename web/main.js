@@ -4,6 +4,8 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 const modelSelect = document.querySelector("#modelSelect");
 const uploadInput = document.querySelector("#uploadInput");
 const prepareButton = document.querySelector("#prepareButton");
+const convertMesh2SplatButton = document.querySelector("#convertMesh2SplatButton");
+const mesh2splatDensity = document.querySelector("#mesh2splatDensity");
 const representationSelect = document.querySelector("#representationSelect");
 const trainedSelect = document.querySelector("#trainedSelect");
 const modeSelect = document.querySelector("#modeSelect");
@@ -335,10 +337,11 @@ async function loadModels() {
 
 async function loadTrainedGaussians() {
   const data = await api("/api/trained-gaussians");
+  const lodSetData = await api("/api/mesh2splat-lod-sets");
   trainedSelect.innerHTML = "";
   const none = document.createElement("option");
   none.value = "";
-  none.textContent = data.models.length ? "Auto match by mesh name" : "No trained .ply found";
+  none.textContent = data.models.length ? "Auto match by mesh name" : "No single trained .ply found";
   trainedSelect.appendChild(none);
   for (const model of data.models) {
     const option = document.createElement("option");
@@ -346,7 +349,12 @@ async function loadTrainedGaussians() {
     option.textContent = model.name;
     trainedSelect.appendChild(option);
   }
-  if (data.models.length === 0) representationSelect.value = "initialized";
+  if (lodSetData.sets.length > 0) {
+    representationSelect.value = "mesh2splat_lods";
+    setStatus(`Found ${lodSetData.sets.length} Mesh2Splat LOD set(s).`);
+  } else if (data.models.length === 0) {
+    representationSelect.value = "initialized";
+  }
 }
 
 async function prepareSelectedModel() {
@@ -362,34 +370,69 @@ async function prepareSelectedModel() {
         trained_ply_id: trainedSelect.value || null,
       }),
     });
-
-    state.preparedId = prepared.id;
-    state.prepared = prepared;
-    state.lodCache.clear();
-    disposeObject(state.meshObject);
-    disposeObject(state.selectedGaussianObject);
-    clearTransitionObjects();
-    state.meshObject = buildMesh(prepared.mesh);
-    scene.add(state.meshObject);
-
-    lodSelect.innerHTML = "";
-    for (const lod of prepared.lods) {
-      const option = document.createElement("option");
-      option.value = lod.count;
-      option.textContent = `${lod.count.toLocaleString()} Gaussians`;
-      lodSelect.appendChild(option);
-    }
-
-    transitionSlider.value = "0";
-    transitionValue.textContent = "0%";
-    if (modeSelect.value === "transition") {
-      await updateTransitionView();
-    } else {
-      await loadSelectedLod();
-    }
+    await applyPreparedModel(prepared);
   } catch (error) {
     setStatus(`Failed:\n${error.message}`);
   } finally {
+    prepareButton.disabled = false;
+  }
+}
+
+async function applyPreparedModel(prepared) {
+  state.preparedId = prepared.id;
+  state.prepared = prepared;
+  state.lodCache.clear();
+  disposeObject(state.meshObject);
+  disposeObject(state.selectedGaussianObject);
+  clearTransitionObjects();
+  state.meshObject = buildMesh(prepared.mesh);
+  scene.add(state.meshObject);
+
+  lodSelect.innerHTML = "";
+  for (const lod of prepared.lods) {
+    const option = document.createElement("option");
+    option.value = lod.name;
+    option.textContent = `${lod.name.toLocaleString?.() ?? lod.name} target / ${lod.count.toLocaleString()} loaded`;
+    lodSelect.appendChild(option);
+  }
+
+  transitionSlider.value = "0";
+  transitionValue.textContent = "0%";
+  if (modeSelect.value === "transition") {
+    await updateTransitionView();
+  } else {
+    await loadSelectedLod();
+  }
+}
+
+async function convertSelectedWithMesh2Splat() {
+  convertMesh2SplatButton.disabled = true;
+  prepareButton.disabled = true;
+  setStatus("Running Mesh2Splat conversion...");
+  try {
+    const prepared = await api("/api/convert-mesh2splat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model_id: modelSelect.value,
+        density: Number(mesh2splatDensity.value),
+      }),
+    });
+    representationSelect.value = "trained";
+    await loadTrainedGaussians();
+    const match = [...trainedSelect.options].find((option) => option.textContent && prepared.gaussian_source?.endsWith(option.textContent));
+    if (match) trainedSelect.value = match.value;
+    await applyPreparedModel(prepared);
+    setStatus([
+      "Mesh2Splat conversion complete.",
+      `PLY: ${prepared.conversion?.output_ply ?? prepared.gaussian_source}`,
+      `GLB: ${prepared.conversion?.glb_mesh ?? "input was already GLB"}`,
+      `Prepared ${prepared.lods.length} LOD level(s).`,
+    ].join("\n"));
+  } catch (error) {
+    setStatus(`Mesh2Splat conversion failed:\n${error.message}`);
+  } finally {
+    convertMesh2SplatButton.disabled = false;
     prepareButton.disabled = false;
   }
 }
@@ -446,6 +489,7 @@ function animate() {
 
 window.addEventListener("resize", resize);
 prepareButton.addEventListener("click", prepareSelectedModel);
+convertMesh2SplatButton.addEventListener("click", convertSelectedWithMesh2Splat);
 uploadInput.addEventListener("change", uploadModel);
 lodSelect.addEventListener("change", loadSelectedLod);
 modeSelect.addEventListener("change", updateVisibility);

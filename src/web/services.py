@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,16 +46,18 @@ class ModelStore:
         source_dirs: list[str | Path] | None = None,
         upload_dir: str | Path = "data/source/uploads",
         trained_dirs: list[str | Path] | None = None,
+        mesh2splat_lod_dirs: list[str | Path] | None = None,
         logger: StageLogger | None = None,
     ):
         self.source_dirs = [Path(path) for path in (source_dirs or ["data/source", "data/meshes"])]
         self.upload_dir = Path(upload_dir)
         self.trained_dirs = [Path(path) for path in (trained_dirs or ["data/trained_gaussians"])]
+        self.mesh2splat_lod_dirs = [Path(path) for path in (mesh2splat_lod_dirs or ["data/mesh2splats"])]
         self.logger = logger or StageLogger(enabled=True, verbose=True)
         self.prepared: dict[str, PreparedModel] = {}
 
     def ensure_dirs(self) -> None:
-        for directory in [*self.source_dirs, self.upload_dir, *self.trained_dirs]:
+        for directory in [*self.source_dirs, self.upload_dir, *self.trained_dirs, *self.mesh2splat_lod_dirs]:
             directory.mkdir(parents=True, exist_ok=True)
 
     def list_models(self) -> list[dict[str, str]]:
@@ -82,7 +85,7 @@ class ModelStore:
         self.ensure_dirs()
         models = []
         seen: set[Path] = set()
-        for directory in self.trained_dirs:
+        for directory in [*self.trained_dirs, *self.mesh2splat_lod_dirs]:
             if not directory.exists():
                 continue
             for path in sorted(directory.rglob("*.ply")):
@@ -92,6 +95,34 @@ class ModelStore:
                 seen.add(resolved)
                 models.append({"id": self.path_to_id(path), "name": path.name, "source": str(path)})
         return models
+
+    def list_mesh2splat_lod_sets(self) -> list[dict[str, Any]]:
+        self.ensure_dirs()
+        grouped: dict[str, list[tuple[int, Path]]] = {}
+        for directory in self.mesh2splat_lod_dirs:
+            if not directory.exists():
+                continue
+            for path in sorted(directory.rglob("*.ply")):
+                count = self._count_from_lod_filename(path)
+                if count is None:
+                    continue
+                key = self._lod_group_key(path)
+                grouped.setdefault(key, []).append((count, path))
+        sets = []
+        for key, entries in sorted(grouped.items()):
+            unique_counts = sorted({count for count, _ in entries})
+            if not unique_counts:
+                continue
+            sets.append(
+                {
+                    "id": f"mesh2splat-lods:{key}",
+                    "name": f"{key} ({len(unique_counts)} LODs, {unique_counts[0]}-{unique_counts[-1]})",
+                    "mesh_key": key,
+                    "counts": unique_counts,
+                    "source": ", ".join(str(path) for _, path in sorted(entries)),
+                }
+            )
+        return sets
 
     def save_upload(self, filename: str, fileobj: Any) -> dict[str, str]:
         self.ensure_dirs()
@@ -129,6 +160,17 @@ class ModelStore:
                 trained_cloud = load_trained_gaussian_ply(trained_path)
                 lods = build_trained_lods(trained_cloud, lod_counts)
                 gaussian_source = str(trained_path)
+            elif representation == "mesh2splat_lods":
+                lod_paths = self.find_mesh2splat_lod_set(mesh.name)
+                if not lod_paths:
+                    raise FileNotFoundError(
+                        f"No Mesh2Splat LOD .ply set was found for mesh {mesh.name!r} under data/mesh2splats."
+                    )
+                lods = {
+                    str(count): load_trained_gaussian_ply(path)
+                    for count, path in sorted(lod_paths.items())
+                }
+                gaussian_source = "; ".join(str(path) for _, path in sorted(lod_paths.items()))
             else:
                 points, normals, colors = mesh.sample_surface(max(lod_counts), seed=seed)
                 lods = GaussianLODBuilder(points, normals, colors, seed=seed).build_nested(lod_counts)
@@ -216,6 +258,34 @@ class ModelStore:
             if key in path.stem.lower() or key in str(path.parent).lower():
                 return path
         return None
+
+    def find_mesh2splat_lod_set(self, mesh_name: str) -> dict[int, Path]:
+        mesh_key = mesh_name.lower()
+        candidates: dict[int, Path] = {}
+        fallback: dict[int, Path] = {}
+        for directory in self.mesh2splat_lod_dirs:
+            if not directory.exists():
+                continue
+            for path in sorted(directory.rglob("*.ply")):
+                count = self._count_from_lod_filename(path)
+                if count is None:
+                    continue
+                group_key = self._lod_group_key(path)
+                if mesh_key in group_key or group_key in mesh_key:
+                    candidates[count] = path
+                fallback[count] = path
+        return candidates or fallback
+
+    @staticmethod
+    def _count_from_lod_filename(path: Path) -> int | None:
+        matches = re.findall(r"(\d+)", path.stem)
+        return int(matches[-1]) if matches else None
+
+    @staticmethod
+    def _lod_group_key(path: Path) -> str:
+        stem = re.sub(r"[-_]?(\d+)$", "", path.stem.lower())
+        stem = stem.replace("-trained", "").replace("_trained", "")
+        return stem or path.parent.name.lower()
 
     @staticmethod
     def _prepared_id(model_id: str, lod_counts: list[int], source: str) -> str:
