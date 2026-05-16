@@ -1,0 +1,139 @@
+% ---------------------------------------------------------------------------
+% Seminar report based on the Eurographics/CGF author guidelines template.
+% ---------------------------------------------------------------------------
+
+\documentclass{egpubl}
+
+% CGF-style submission layout, following EGauthorGuidelines-cgf.
+\JournalSubmission
+\electronicVersion
+
+\ifpdf
+  \usepackage[pdftex]{graphicx}
+  \pdfcompresslevel=9
+\else
+  \usepackage[dvips]{graphicx}
+\fi
+
+\PrintedOrElectronic
+
+\usepackage{t1enc,dfadobe}
+\usepackage{egweblnk}
+\usepackage{cite}
+\usepackage{amsmath}
+\usepackage{url}
+
+\title[Mesh-to-Gaussian LOD Transition]{Seamless Transition Between Gaussian Splatting and Mesh Rendering}
+
+\author[J. Krajcar]
+{Jerneja Krajcar\\
+University of Ljubljana}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This seminar presents a prototype for distance-dependent transitions between mesh rendering and 3D Gaussian Splatting. The goal is to use a mesh representation for distant, low-detail views and a
+Gaussian representation for close-up views, while avoiding abrupt visual changes. The implemented solution builds Gaussian levels of detail, computes smooth transition weights from camera distance,
+blends mesh and Gaussian renderings, and exposes the same behaviour in an offline pipeline and a web viewer.
+\end{abstract}
+
+\begin{keywords}
+3D Gaussian Splatting, mesh rendering, level of detail, hybrid rendering, smooth transitions
+\end{keywords}
+
+\section{Introduction}
+
+Meshes are compact, widely supported, and reliable for low-detail views. 3D Gaussian Splatting (3DGS), as introduced by Kerbl et al.~\cite{kerbl2023gaussian}, is useful for high-quality appearance
+because it represents a scene with many semi-transparent Gaussian primitives instead of only triangle surfaces. The seminar task is therefore a hybrid rendering problem:
+use the scalable behaviour of meshes at distance, but switch to richer Gaussian detail when the camera moves closer.
+
+The main difficulty is not only selecting the right representation, but changing between representations without popping,
+brightness jumps, or visible discontinuities. The current implementation is a prototype, not a production renderer.
+
+\section{Problem}
+
+The required system should support a seamless transition between two scene representations:
+
+\begin{itemize}
+  \item a simplified mesh, suitable for low-detail or far-away views;
+  \item one or more Gaussian splat representations, suitable for higher-detail close-up views.
+\end{itemize}
+
+A naive switch at a fixed distance produces visible popping because the two renderers do not necessarily match in color,
+coverage, silhouette, or sampling density. A better solution must make the representation change gradual and should keep neighbouring
+Gaussian levels spatially related, so that a denser level of detail does not look like a completely unrelated point set.
+
+\section{Related Work}
+
+3DGS provides the basic representation used for the Gaussian side of this project~\cite{kerbl2023gaussian}.
+SuGaR aligns Gaussians with surfaces and uses this relationship for mesh extraction and high-quality mesh rendering~\cite{guedon2024sugar}.
+This is directly relevant because it shows that mesh and Gaussian representations can be connected through surface alignment rather than treated as unrelated assets.
+
+SplattingAvatar embeds Gaussian splats on a mesh for real-time human avatar rendering~\cite{shao2024splattingavatar}.
+Its main target is animatable humans, but the idea of attaching or aligning Gaussian appearance to mesh structure is related to this seminar work.
+
+Mesh2Splat~\cite{mesh2splat2025} was also considered and integrated as an external conversion path because it offers a practical way to create Gaussian splat files from mesh assets.
+
+\section{Implemented Solution}
+
+The current prototype contains two complementary workflows.
+
+First, the offline Python pipeline loads a mesh or creates a procedural demo sphere, normalizes it to a unit sphere, generates orbit cameras, samples the mesh surface, and builds nested Gaussian levels of detail.
+The LODs are nested by using a shared farthest-point ordering: smaller LODs are prefixes of the same ordered set. This keeps coarse and dense Gaussian levels spatially related and reduces transition instability.
+
+Second, the web viewer supports interactive preparation and inspection. It can use an initialized preview built from mesh sampling, a single trained Gaussian PLY file,
+or a Mesh2Splat LOD set exported as several PLY files.
+
+\subsection{Transition Model}
+
+The transition is controlled by camera distance. A smoothstep function is used for all fades, so weights change gradually instead of linearly snapping at a threshold.
+The mesh weight fades out between configurable far and near distances. The remaining weight budget is assigned to active Gaussian LOD bands and then normalized, so that the combined mesh and Gaussian contribution stays stable.
+
+For the default configuration, the mesh starts fading near distance $3.6$ and is mostly replaced by Gaussian rendering near distance $2.2$ in normalized object units.
+Gaussian LOD bands then progressively select counts such as 10, 100, 500, 5000, and 20000 splats as the camera moves closer.
+
+\subsection{Blending}
+
+The current blend is an image-space weighted sum:
+
+\[
+I = w_m I_m + \sum_i w_i I_i,
+\]
+
+where $I_m$ is the mesh render, $I_i$ are Gaussian LOD renders, and the weights sum to one. This keeps the transition simple and inspectable. It does not yet solve deeper alignment problems such as exact silhouette matching, depth-aware compositing between representations, or learned color correction.
+
+\section{Alternatives Considered}
+
+\textbf{Hard LOD switching} would be simpler, but it directly causes popping and therefore does not satisfy the solution of the problem.
+
+\textbf{Depth-aware screen-space blending} could reduce artifacts where the mesh and Gaussians overlap incorrectly. It is a good future direction, but the first version uses color
+blending because it is easier to debug and works with the current lightweight renderers.
+
+\textbf{Full surface-aligned Gaussian optimization} in the style of SuGaR would likely improve geometric consistency, but it is heavier than the current seminar prototype and would require a stronger training and reconstruction pipeline.
+
+\textbf{Only using Mesh2Splat} was also considered. The project integrates Mesh2Splat as an external path, but it is not the only path.
+
+\section{Results}
+
+The prototype currently produces a transition video, saved Gaussian LOD files, and a metrics file with render timing, LOD memory use, quality metrics, transition weights, and a simple popping score.
+
+On the current default demo sphere output, the generated LODs contain 10, 100, 500, 5000, and 20000 Gaussians. The stored Gaussian data scales linearly from 320 bytes for 10 Gaussians to 640000 bytes for 20000 Gaussians. The transition output contains 32 frames and logs the exact mesh and Gaussian LOD weights for every frame. This confirms that the implementation performs a continuous weighted transition instead of a single hard switch.
+
+The CPU software renderer is intentionally simple and inspectable, so high Gaussian counts are slow. This is acceptable for validating the algorithmic structure, but real-time performance would require a GPU Gaussian rasterizer such as gsplat or another optimized backend.
+
+\section{Limitations and Future Work}
+
+The largest current limitation is that the initialized Gaussian preview is surface-sampled rather than fully optimized for photorealistic appearance. The project already includes paths for trained Gaussian PLY files and Mesh2Splat LOD sets, which are more appropriate for higher-quality demonstrations.
+
+Future work should focus on three improvements: depth-aware blending, better alignment between mesh and Gaussian geometry, and quantitative comparison on real assets rather than only on the procedural demo. A later version could also bind Gaussian parameters more directly to mesh surfaces, following the direction suggested by SuGaR and SplattingAvatar.
+
+\section{Conclusion}
+
+The implemented prototype demonstrates a clear first step toward seamless mesh-to-Gaussian LOD transitions. It does not claim to solve all visual artifacts, but it establishes the key structure: multiple representations, distance-based smooth weights, nested Gaussian LODs, offline and interactive viewing, and metrics for inspecting the result. This direction was chosen because it is simple enough to validate now while still leaving a direct path toward more advanced alignment and blending methods.
+
+\bibliographystyle{eg-alpha-doi}
+\bibliography{report}
+
+\end{document}

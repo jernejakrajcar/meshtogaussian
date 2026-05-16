@@ -2,7 +2,7 @@
 
 Practical seminar prototype for smooth transitions between mesh rendering and 3D Gaussian Splatting-style level of detail.
 
-The first version is intentionally dependency-light at runtime:
+The first version is dependency-light at runtime:
 
 - Uses PyTorch tensors and selects CUDA when available.
 - Falls back to CPU automatically.
@@ -19,7 +19,32 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-For a CPU-only quick test, PyTorch from your existing environment is enough. For CUDA, install the matching PyTorch build from the official PyTorch selector.
+For a CPU-only quick test, PyTorch is enough. For CUDA, install the matching PyTorch build from the official PyTorch selector.
+
+### Windows Setup Script
+
+On a fresh Windows laptop, run the setup script from the repository root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/setup_windows.ps1
+```
+
+If Mesh2Splat is already built, pass the executable path so the script can configure the app:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/setup_windows.ps1 `
+  -Mesh2SplatExe "C:\path\to\mesh2splat\bin\Release\Mesh2Splat.exe"
+```
+
+The script creates `.venv`, installs Python dependencies, creates the local data folders, configures `configs/default.yaml` and `configs/smoke.yaml`, 
+runs the Mesh2Splat preflight when an executable is available, and runs the tests. 
+Add `-StartViewer` to start the web viewer after setup.
+
+Useful setup flags:
+
+- `-SkipInstall` skips dependency installation when `.venv` is already ready.
+- `-SkipTests` skips the test run.
+- `-SkipMesh2SplatConfig` prepares the Python app without editing Mesh2Splat paths.
 
 ## Run The Full Demo
 
@@ -92,6 +117,95 @@ Expected flow:
 3. Put or keep the trained Gaussian `.ply` under `data/trained_gaussians/`.
 4. The web viewer can use `Trained splats` mode to build LODs from that `.ply`.
 
+## Mesh2Splat Workflow
+
+This project can use Electronic Arts' Mesh2Splat as an external Windows converter. 
+Mesh2Splat is not imported as a Python package; the Python app either reads `.ply` files 
+exported from the Mesh2Splat GUI or calls a compatible headless executable.
+
+### 1. Get And Build Mesh2Splat
+
+Clone Mesh2Splat next to this repository or anywhere on disk:
+
+```powershell
+git clone https://github.com/electronicarts/mesh2splat.git ..\mesh2splat
+```
+
+Build the Release executable with Visual Studio or CMake according to the Mesh2Splat repository instructions. 
+After building, you should have something like:
+
+```text
+C:\path\to\mesh2splat\bin\Release\Mesh2Splat.exe
+```
+
+Configure this project by running:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/setup_windows.ps1 `
+  -Mesh2SplatExe "C:\path\to\mesh2splat\bin\Release\Mesh2Splat.exe"
+```
+
+or edit the config manually:
+
+```yaml
+mesh2splat:
+  executable: C:/path/to/mesh2splat/bin/Release/Mesh2Splat.exe
+  working_dir: C:/path/to/mesh2splat/bin/Release
+```
+
+### 2. Export Several Mesh2Splat LOD Files
+
+The current reliable workflow is the Mesh2Splat GUI:
+
+1. Open `Mesh2Splat.exe`.
+2. Load a `.glb` mesh.
+3. Convert the mesh to 3DGS.
+4. Export multiple `.ply` files with different splat counts.
+5. Put the files in `data/mesh2splats/`.
+
+Name the files so the splat count is the last number in the filename:
+
+```text
+data/mesh2splats/sourdough-trained-300.ply
+data/mesh2splats/sourdough-trained-800.ply
+data/mesh2splats/sourdough-trained-1700.ply
+data/mesh2splats/sourdough-trained-284000.ply
+```
+
+The viewer groups files by the shared mesh name (`sourdough`) and uses the 
+final number as the LOD key. These files are ignored by git because they are large generated assets.
+
+### 3. View Proportional Mesh2Splat LOD Transitions
+
+Start the viewer:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\serve_visualizer.py --config configs/default.yaml
+```
+
+Open `http://127.0.0.1:8000`, then:
+
+1. Choose the matching source mesh, for example `sourdough.glb`.
+2. Set `Gaussian source` to `Mesh2Splat LOD set`.
+3. Click `Prepare Viewer Data`.
+4. Set `View mode` to `Pipeline transition`.
+5. Move the transition slider.
+
+The viewer uses the smallest Mesh2Splat `.ply` at far Gaussian distances and progressively switches to 
+denser `.ply` files as the camera moves closer. For a single exported `.ply`, use `Gaussian source: Trained splats` instead.
+
+### 4. Optional Headless Conversion
+
+The `Convert with Mesh2Splat` button calls the configured executable with this command contract:
+
+```powershell
+Mesh2Splat.exe --headless --input model.glb --output model_mesh2splat.ply --density 1.0 --quit
+```
+
+Use this only if your Mesh2Splat build supports 
+those arguments or you have patched Mesh2Splat to expose a headless export path. 
+Otherwise, export from the GUI and place the `.ply` files in `data/mesh2splats/`.
+
 ## Web Visualizer
 
 Install the web dependencies from `requirements.txt`, then run:
@@ -100,9 +214,16 @@ Install the web dependencies from `requirements.txt`, then run:
 python scripts/serve_visualizer.py --config configs/default.yaml
 ```
 
-Open `http://127.0.0.1:8000`. The viewer can use the procedural demo model, list meshes from `data/source/` and `data/meshes/`, or upload OBJ/PLY/GLTF/GLB files into `data/source/uploads/`. It also lists trained Gaussian `.ply` files from `data/trained_gaussians/`.
+Open `http://127.0.0.1:8000`. The viewer can use the procedural demo model, 
+list meshes from `data/source/` and `data/meshes/`, or upload OBJ/PLY/GLTF/GLB 
+files into `data/source/uploads/`. It also lists trained Gaussian 
+`.ply` files from `data/trained_gaussians/` and Mesh2Splat LOD sets from `data/mesh2splats/`.
 
-The viewer has two Gaussian sources: `Trained splats` for real trained 3DGS PLY files, and `Initialized preview` for the old mesh-sampled baseline. The default `Pipeline transition` mode includes a slider that moves the camera from far to near and updates mesh/Gaussian LOD weights with the same transition model as the offline pipeline.
+The viewer has three Gaussian sources: `Mesh2Splat LOD set` for multiple exported 
+Mesh2Splat PLY levels, `Trained splats` for one real trained 3DGS PLY file, 
+and `Initialized preview` for the old mesh-sampled baseline. 
+The default `Pipeline transition` mode includes a slider that moves the camera from far 
+to near and updates mesh/Gaussian LOD weights with the same transition model as the offline pipeline.
 
 ## Tests
 
@@ -110,6 +231,28 @@ The viewer has two Gaussian sources: `Trained splats` for real trained 3DGS PLY 
 pytest
 ```
 
+## Seminar Report
+
+The short LaTeX report is located at:
+
+```text
+docs/report/report.tex
+```
+
+Export it to PDF with `latexmk` from the repository root:
+
+```powershell
+latexmk -pdf docs/report/report.tex -outdir=docs/report
+```
+
+The generated PDF will be written next to the source file as `docs/report/report.pdf`.
+
+## License
+
+This repository is published under the MIT License. See [LICENSE](LICENSE).
+
 ## Notes
 
-This is a seminar prototype, not a production Gaussian Splatting system. The software renderer is deliberately simple and can be slow for `20_000` Gaussians on CPU. The architecture leaves room for `gsplat` or another CUDA rasterizer later through `GaussianRenderer`.
+This is a seminar prototype, not a production Gaussian Splatting system. 
+The software renderer is deliberately simple and can be slow for `20_000` Gaussians on CPU. 
+The architecture leaves room for `gsplat` or another CUDA rasterizer later through `GaussianRenderer`.
