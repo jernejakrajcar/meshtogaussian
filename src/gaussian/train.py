@@ -12,7 +12,9 @@ class GaussianTrainer:
 
     The default software splat renderer prioritizes readability and is not a full
     differentiable Gaussian rasterizer. This class keeps the pipeline API ready
-    for later `gsplat`/CUDA training without pretending to run high-end training.
+    for a possible future `gsplat`/CUDA training path without pretending that
+    this is the main project workflow. The current main path uses Mesh2Splat
+    exports for practical Gaussian LODs.
     """
 
     cloud: GaussianCloud

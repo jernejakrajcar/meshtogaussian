@@ -2,9 +2,10 @@
 
 Practical seminar prototype for smooth transitions between mesh rendering and 3D Gaussian Splatting-style level of detail.
 
-The first version is dependency-light at runtime:
+The current main workflow uses Mesh2Splat-exported `.ply` files for the Gaussian representation and keeps CUDA/`gsplat` training as a possible future improvement. The first version is dependency-light at runtime:
 
-- Uses PyTorch tensors and selects CUDA when available.
+- Uses Mesh2Splat LOD exports as the primary practical Gaussian source.
+- Uses PyTorch tensors for the inspectable fallback renderer.
 - Falls back to CPU automatically.
 - Tries DirectML only when requested and installed.
 - Can run a demo without an input mesh by generating a procedural sphere.
@@ -19,7 +20,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-For a CPU-only quick test, PyTorch is enough. For CUDA, install the matching PyTorch build from the official PyTorch selector.
+For the main Mesh2Splat workflow, the Python app does not require CUDA. CUDA-enabled PyTorch and `gsplat` are optional future-work tools for experimenting with direct Gaussian training.
 
 ### Windows Setup Script
 
@@ -88,40 +89,9 @@ python scripts/render_transition.py --config configs/default.yaml
 python scripts/evaluate.py --config configs/default.yaml
 ```
 
-## Train Real Gaussian Splats From A Mesh
-
-Generate a synthetic COLMAP-style dataset from a mesh and create the `gsplat` training command:
-
-```powershell
-python scripts/train_gaussians_from_mesh.py --mesh data/meshes/my_model.glb --config configs/default.yaml
-```
-
-After installing and configuring `gsplat`, run training directly:
-
-```powershell
-python scripts/train_gaussians_from_mesh.py --mesh data/meshes/my_model.glb --config configs/default.yaml --run-trainer
-```
-
-On the NVIDIA/CUDA machine, first run:
-
-```powershell
-python scripts/check_cuda_training_env.py --config configs/default.yaml
-```
-
-See [CUDA_TRAINING.md](docs/CUDA_TRAINING.md) for the full transfer/training workflow.
-
-Expected flow:
-
-1. Synthetic images and camera files are written to `data/generated_datasets/<model_name>/`.
-2. `gsplat` writes trained output under `data/trained_gaussians/<model_name>/`.
-3. Put or keep the trained Gaussian `.ply` under `data/trained_gaussians/`.
-4. The web viewer can use `Trained splats` mode to build LODs from that `.ply`.
-
 ## Mesh2Splat Workflow
 
-This project can use Electronic Arts' Mesh2Splat as an external Windows converter. 
-Mesh2Splat is not imported as a Python package; the Python app either reads `.ply` files 
-exported from the Mesh2Splat GUI or calls a compatible headless executable.
+This is the main project workflow. Electronic Arts' Mesh2Splat is used as an external Windows converter to create Gaussian `.ply` files from mesh assets. Mesh2Splat is not imported as a Python package; the Python app either reads `.ply` files exported from the Mesh2Splat GUI or calls a compatible headless executable.
 
 ### 1. Get And Build Mesh2Splat
 
@@ -131,7 +101,7 @@ Clone Mesh2Splat next to this repository or anywhere on disk:
 git clone https://github.com/electronicarts/mesh2splat.git ..\mesh2splat
 ```
 
-Build the Release executable with Visual Studio or CMake according to the Mesh2Splat repository instructions. 
+Build the Release executable with Visual Studio or CMake according to the Mesh2Splat repository instructions.
 After building, you should have something like:
 
 ```text
@@ -172,7 +142,7 @@ data/mesh2splats/sourdough-trained-1700.ply
 data/mesh2splats/sourdough-trained-284000.ply
 ```
 
-The viewer groups files by the shared mesh name (`sourdough`) and uses the 
+The viewer groups files by the shared mesh name (`sourdough`) and uses the
 final number as the LOD key. These files are ignored by git because they are large generated assets.
 
 ### 3. View Proportional Mesh2Splat LOD Transitions
@@ -191,7 +161,7 @@ Open `http://127.0.0.1:8000`, then:
 4. Set `View mode` to `Pipeline transition`.
 5. Move the transition slider.
 
-The viewer uses the smallest Mesh2Splat `.ply` at far Gaussian distances and progressively switches to 
+The viewer uses the smallest Mesh2Splat `.ply` at far Gaussian distances and progressively switches to
 denser `.ply` files as the camera moves closer. For a single exported `.ply`, use `Gaussian source: Trained splats` instead.
 
 ### 4. Optional Headless Conversion
@@ -202,9 +172,39 @@ The `Convert with Mesh2Splat` button calls the configured executable with this c
 Mesh2Splat.exe --headless --input model.glb --output model_mesh2splat.ply --density 1.0 --quit
 ```
 
-Use this only if your Mesh2Splat build supports 
-those arguments or you have patched Mesh2Splat to expose a headless export path. 
+Use this only if your Mesh2Splat build supports
+those arguments or you have patched Mesh2Splat to expose a headless export path.
 Otherwise, export from the GUI and place the `.ply` files in `data/mesh2splats/`.
+
+## Future Improvement: CUDA/gsplat Training
+
+Generate a synthetic COLMAP-style dataset from a mesh and create the `gsplat` training command:
+
+```powershell
+python scripts/train_gaussians_from_mesh.py --mesh data/meshes/my_model.glb --config configs/default.yaml
+```
+
+After installing and configuring `gsplat`, training can be run directly. This is not the current main path; it is kept as future work for producing trained Gaussian splats without manual Mesh2Splat export.
+
+```powershell
+python scripts/train_gaussians_from_mesh.py --mesh data/meshes/my_model.glb --config configs/default.yaml --run-trainer
+```
+
+On the NVIDIA/CUDA machine, first run:
+
+```powershell
+python scripts/check_cuda_training_env.py --config configs/default.yaml
+```
+
+See [CUDA_TRAINING.md](docs/CUDA_TRAINING.md) for the full transfer/training workflow.
+See [GSPLAT_SETUP.md](docs/GSPLAT_SETUP.md) for a small standalone `gsplat` smoke-test environment.
+
+Expected experimental flow:
+
+1. Synthetic images and camera files are written to `data/generated_datasets/<model_name>/`.
+2. `gsplat` writes trained output under `data/trained_gaussians/<model_name>/`.
+3. Put or keep the trained Gaussian `.ply` under `data/trained_gaussians/`.
+4. The web viewer can use `Trained splats` mode to build LODs from that `.ply`.
 
 ## Web Visualizer
 
@@ -253,6 +253,7 @@ This repository is published under the MIT License. See [LICENSE](LICENSE).
 
 ## Notes
 
-This is a seminar prototype, not a production Gaussian Splatting system. 
-The software renderer is deliberately simple and can be slow for `20_000` Gaussians on CPU. 
-The architecture leaves room for `gsplat` or another CUDA rasterizer later through `GaussianRenderer`.
+This is a seminar prototype, not a production Gaussian Splatting system.
+The current main path is Mesh2Splat export plus viewer-side LOD transitions.
+The software renderer is deliberately simple and can be slow for `20_000` Gaussians on CPU.
+Direct CUDA/`gsplat` training and GPU rasterization are future improvements.

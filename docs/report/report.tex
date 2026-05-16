@@ -35,8 +35,8 @@ University of Ljubljana}
 
 \begin{abstract}
 This seminar presents a prototype for distance-dependent transitions between mesh rendering and 3D Gaussian Splatting. The goal is to use a mesh representation for distant, low-detail views and a
-Gaussian representation for close-up views, while avoiding abrupt visual changes. The implemented solution builds Gaussian levels of detail, computes smooth transition weights from camera distance,
-blends mesh and Gaussian renderings, and exposes the same behaviour in an offline pipeline and a web viewer.
+Gaussian representation for close-up views, while avoiding abrupt visual changes. The current main path uses Mesh2Splat exports as the Gaussian input, builds levels of detail from those exported
+PLY files, computes smooth transition weights from camera distance, and exposes the transition in a web viewer.
 \end{abstract}
 
 \begin{keywords}
@@ -74,17 +74,15 @@ This is directly relevant because it shows that mesh and Gaussian representation
 SplattingAvatar embeds Gaussian splats on a mesh for real-time human avatar rendering~\cite{shao2024splattingavatar}.
 Its main target is animatable humans, but the idea of attaching or aligning Gaussian appearance to mesh structure is related to this seminar work.
 
-Mesh2Splat~\cite{mesh2splat2025} was also considered and integrated as an external conversion path because it offers a practical way to create Gaussian splat files from mesh assets.
+Mesh2Splat~\cite{mesh2splat2025} is used as the main practical conversion path because it offers a direct way to create Gaussian splat PLY files from mesh assets without building a full CUDA training pipeline inside this project.
 
 \section{Implemented Solution}
 
-The current prototype contains two complementary workflows.
+The current prototype is centred on a Mesh2Splat workflow.
 
-First, the offline Python pipeline loads a mesh or creates a procedural demo sphere, normalizes it to a unit sphere, generates orbit cameras, samples the mesh surface, and builds nested Gaussian levels of detail.
-The LODs are nested by using a shared farthest-point ordering: smaller LODs are prefixes of the same ordered set. This keeps coarse and dense Gaussian levels spatially related and reduces transition instability.
+In the main workflow, a mesh is converted with Mesh2Splat and several Gaussian PLY files are exported with different splat counts. These files are placed under \texttt{data/mesh2splats/}. The viewer groups them by mesh name and uses the splat count in the filename as the LOD key.
 
-Second, the web viewer supports interactive preparation and inspection. It can use an initialized preview built from mesh sampling, a single trained Gaussian PLY file,
-or a Mesh2Splat LOD set exported as several PLY files.
+The web viewer then loads the source mesh and the matching Mesh2Splat LOD set. It can also use an initialized preview built from mesh sampling, but this is now mainly a fallback for development and testing rather than the intended final result.
 
 \subsection{Transition Model}
 
@@ -111,27 +109,27 @@ where $I_m$ is the mesh render, $I_i$ are Gaussian LOD renders, and the weights 
 \textbf{Depth-aware screen-space blending} could reduce artifacts where the mesh and Gaussians overlap incorrectly. It is a good future direction, but the first version uses color
 blending because it is easier to debug and works with the current lightweight renderers.
 
-\textbf{Full surface-aligned Gaussian optimization} in the style of SuGaR would likely improve geometric consistency, but it is heavier than the current seminar prototype and would require a stronger training and reconstruction pipeline.
+\textbf{Direct CUDA/gsplat training} was explored as a possible route for generating high-quality splats directly from synthetic training views. It was not kept as the main path because it adds a heavier CUDA, PyTorch, compiler, and training setup. This remains a future improvement.
 
-\textbf{Only using Mesh2Splat} was also considered. The project integrates Mesh2Splat as an external path, but it is not the only path.
+\textbf{Full surface-aligned Gaussian optimization} in the style of SuGaR would likely improve geometric consistency, but it is heavier than the current seminar prototype and would require a stronger training and reconstruction pipeline.
 
 \section{Results}
 
-The prototype currently produces a transition video, saved Gaussian LOD files, and a metrics file with render timing, LOD memory use, quality metrics, transition weights, and a simple popping score.
+The prototype currently focuses on the interactive viewer. It loads a source mesh together with Mesh2Splat-exported Gaussian LOD files and displays a continuous transition controlled by camera distance.
 
-On the current default demo sphere output, the generated LODs contain 10, 100, 500, 5000, and 20000 Gaussians. The stored Gaussian data scales linearly from 320 bytes for 10 Gaussians to 640000 bytes for 20000 Gaussians. The transition output contains 32 frames and logs the exact mesh and Gaussian LOD weights for every frame. This confirms that the implementation performs a continuous weighted transition instead of a single hard switch.
+In the current workflow, the exported Mesh2Splat files can contain several LOD sizes, for example a small far-distance splat set and progressively denser near-distance splat sets. The viewer switches between these LOD files proportionally rather than with a single hard switch, so the transition can be inspected with the pipeline slider.
 
-The CPU software renderer is intentionally simple and inspectable, so high Gaussian counts are slow. This is acceptable for validating the algorithmic structure, but real-time performance would require a GPU Gaussian rasterizer such as gsplat or another optimized backend.
+The CPU/offline renderer remains useful for validation, but it is no longer presented as the main route for high-quality Gaussian generation. A GPU Gaussian rasterizer or direct gsplat training would be a natural future improvement.
 
 \section{Limitations and Future Work}
 
-The largest current limitation is that the initialized Gaussian preview is surface-sampled rather than fully optimized for photorealistic appearance. The project already includes paths for trained Gaussian PLY files and Mesh2Splat LOD sets, which are more appropriate for higher-quality demonstrations.
+The largest current limitation is that the project depends on externally exported Mesh2Splat PLY files. This is practical for the seminar prototype, but it does not yet provide an end-to-end learned training pipeline inside the repository.
 
-Future work should focus on three improvements: depth-aware blending, better alignment between mesh and Gaussian geometry, and quantitative comparison on real assets rather than only on the procedural demo. A later version could also bind Gaussian parameters more directly to mesh surfaces, following the direction suggested by SuGaR and SplattingAvatar.
+Future work should focus on four improvements: depth-aware blending, better alignment between mesh and Gaussian geometry, quantitative comparison on real assets, and direct CUDA/gsplat training once the toolchain is stable. A later version could also bind Gaussian parameters more directly to mesh surfaces, following the direction suggested by SuGaR and SplattingAvatar.
 
 \section{Conclusion}
 
-The implemented prototype demonstrates a clear first step toward seamless mesh-to-Gaussian LOD transitions. It does not claim to solve all visual artifacts, but it establishes the key structure: multiple representations, distance-based smooth weights, nested Gaussian LODs, offline and interactive viewing, and metrics for inspecting the result. This direction was chosen because it is simple enough to validate now while still leaving a direct path toward more advanced alignment and blending methods.
+The implemented prototype demonstrates a clear first step toward seamless mesh-to-Gaussian LOD transitions. It does not claim to solve all visual artifacts, but it establishes the key structure: mesh rendering, Mesh2Splat Gaussian LODs, distance-based smooth weights, and interactive inspection. This direction was chosen because it is practical for the current seminar scope while still leaving a direct path toward CUDA-based training and more advanced alignment methods.
 
 \bibliographystyle{eg-alpha-doi}
 \bibliography{report}

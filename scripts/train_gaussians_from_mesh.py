@@ -23,7 +23,12 @@ from src.geometry.cameras import CameraRig
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate mesh training views and optionally run gsplat.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Experimental future-work path: generate mesh training views and optionally run gsplat. "
+            "The main project workflow uses Mesh2Splat-exported PLY LODs."
+        )
+    )
     parser.add_argument("--mesh", required=True, help="Input mesh path, or 'demo' for procedural demo.")
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--dataset-out", default=None)
@@ -85,7 +90,8 @@ def main() -> None:
     print("gsplat command:")
     print(command.as_shell_string())
     if not args.run_trainer:
-        print("Training was not executed. Add --run-trainer after installing/configuring gsplat.")
+        print("Training was not executed. This gsplat route is experimental future work; the main workflow uses Mesh2Splat-exported PLY LODs.")
+        print("Add --run-trainer after installing/configuring gsplat if you want to test it.")
     else:
         trained_ply = find_latest_trained_ply(result_dir)
         if trained_ply is None:

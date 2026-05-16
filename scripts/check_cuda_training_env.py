@@ -14,7 +14,12 @@ from src.training.gsplat_runner import check_cuda_training_environment
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Check whether this machine is ready for CUDA gsplat training.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Check whether this machine is ready for the experimental CUDA/gsplat training path. "
+            "The main project workflow uses Mesh2Splat-exported PLY LODs."
+        )
+    )
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--gsplat-repo", default=None)
     args = parser.parse_args()

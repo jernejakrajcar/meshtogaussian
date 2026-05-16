@@ -1,6 +1,6 @@
-# CUDA Training Workflow
+# Future Improvement: CUDA Training Workflow
 
-This project is designed so preprocessing and viewing can run on CPU, while real 3D Gaussian training runs on a separate NVIDIA/CUDA machine.
+The current main project workflow uses Mesh2Splat-exported PLY files for Gaussian LODs. This document is kept as a future-improvement path for experimenting with direct `gsplat` training on a separate NVIDIA/CUDA machine.
 
 ## 1. Prepare The NVIDIA Machine
 
