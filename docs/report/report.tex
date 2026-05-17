@@ -74,7 +74,8 @@ This is directly relevant because it shows that mesh and Gaussian representation
 SplattingAvatar embeds Gaussian splats on a mesh for real-time human avatar rendering~\cite{shao2024splattingavatar}.
 Its main target is animatable humans, but the idea of attaching or aligning Gaussian appearance to mesh structure is related to this seminar work.
 
-Mesh2Splat~\cite{mesh2splat2025} is used as the main practical conversion path because it offers a direct way to create Gaussian splat PLY files from mesh assets without building a full CUDA training pipeline inside this project.
+Mesh2Splat~\cite{mesh2splat2025} is used as the main practical conversion path because it offers a direct way to create Gaussian splat PLY files from mesh assets.
+The repository also includes an experimental NVIDIA/CUDA \texttt{gsplat} training path, but this is kept separate from the Mesh2Splat workflow.
 
 \section{Implemented Solution}
 
@@ -83,6 +84,10 @@ The current prototype is centred on a Mesh2Splat workflow.
 In the main workflow, a mesh is converted with Mesh2Splat and several Gaussian PLY files are exported with different splat counts. These files are placed under \texttt{data/mesh2splats/}. The viewer groups them by mesh name and uses the splat count in the filename as the LOD key.
 
 The web viewer then loads the source mesh and the matching Mesh2Splat LOD set. It can also use an initialized preview built from mesh sampling, but this is now mainly a fallback for development and testing rather than the intended final result.
+
+An experimental training script was added for NVIDIA/CUDA machines. It renders synthetic views from a mesh, exports a COLMAP-style dataset, prepares a \texttt{gsplat} training command,
+can run the trainer when \texttt{--run-trainer} is provided, and stores the result under \texttt{data/trained\_gaussians/}. A separate environment check reports whether CUDA-enabled PyTorch and
+the expected \texttt{gsplat} trainer script are available.
 
 \subsection{Transition Model}
 
@@ -109,7 +114,8 @@ where $I_m$ is the mesh render, $I_i$ are Gaussian LOD renders, and the weights 
 \textbf{Depth-aware screen-space blending} could reduce artifacts where the mesh and Gaussians overlap incorrectly. It is a good future direction, but the first version uses color
 blending because it is easier to debug and works with the current lightweight renderers.
 
-\textbf{Direct CUDA/gsplat training} was explored as a possible route for generating high-quality splats directly from synthetic training views. It was not kept as the main path because it adds a heavier CUDA, PyTorch, compiler, and training setup. This remains a future improvement.
+\textbf{Direct CUDA/gsplat training} was added as an experimental route for generating splats from synthetic training views on an NVIDIA/CUDA machine.
+It was not kept as the main path because it depends on a heavier CUDA, PyTorch, compiler, and training setup.
 
 \textbf{Full surface-aligned Gaussian optimization} in the style of SuGaR would likely improve geometric consistency, but it is heavier than the current seminar prototype and would require a stronger training and reconstruction pipeline.
 
@@ -119,17 +125,22 @@ The prototype currently focuses on the interactive viewer. It loads a source mes
 
 In the current workflow, the exported Mesh2Splat files can contain several LOD sizes, for example a small far-distance splat set and progressively denser near-distance splat sets. The viewer switches between these LOD files proportionally rather than with a single hard switch, so the transition can be inspected with the pipeline slider.
 
-The CPU/offline renderer remains useful for validation, but it is no longer presented as the main route for high-quality Gaussian generation. A GPU Gaussian rasterizer or direct gsplat training would be a natural future improvement.
+The CPU/offline renderer remains useful for validation, but it is no longer presented as the main route for high-quality Gaussian generation.
+The added NVIDIA/CUDA training path can produce trained Gaussian PLY files for the viewer, while GPU rasterization is still outside the current implementation.
 
 \section{Limitations and Future Work}
 
-The largest current limitation is that the project depends on externally exported Mesh2Splat PLY files. This is practical for the seminar prototype, but it does not yet provide an end-to-end learned training pipeline inside the repository.
+The largest current limitation is that the practical LOD workflow still depends on externally exported Mesh2Splat PLY files.
+The CUDA/\texttt{gsplat} route adds dataset export and trainer execution support, but it is experimental and depends on an external NVIDIA training environment.
 
-Future work should focus on four improvements: depth-aware blending, better alignment between mesh and Gaussian geometry, quantitative comparison on real assets, and direct CUDA/gsplat training once the toolchain is stable. A later version could also bind Gaussian parameters more directly to mesh surfaces, following the direction suggested by SuGaR and SplattingAvatar.
+Future work should focus on four improvements: depth-aware blending, better alignment between mesh and Gaussian geometry, quantitative comparison on real assets,
+and a more stable CUDA/\texttt{gsplat} workflow. A later version could also bind Gaussian parameters more directly to mesh surfaces, following the direction suggested by SuGaR and SplattingAvatar.
 
 \section{Conclusion}
 
-The implemented prototype demonstrates a clear first step toward seamless mesh-to-Gaussian LOD transitions. It does not claim to solve all visual artifacts, but it establishes the key structure: mesh rendering, Mesh2Splat Gaussian LODs, distance-based smooth weights, and interactive inspection. This direction was chosen because it is practical for the current seminar scope while still leaving a direct path toward CUDA-based training and more advanced alignment methods.
+The implemented prototype demonstrates a clear first step toward seamless mesh-to-Gaussian LOD transitions.
+It does not claim to solve all visual artifacts, but it establishes the key structure: mesh rendering, Mesh2Splat Gaussian LODs, distance-based smooth weights, interactive inspection,
+and an experimental NVIDIA/CUDA training route for trained splats.
 
 \bibliographystyle{eg-alpha-doi}
 \bibliography{report}

@@ -288,13 +288,47 @@ def test_fastapi_prepare_trained_returns_representation_metadata(tmp_path: Path)
     assert sorted(payload["viewer"]["transition"]["lod_ranges"]) == ["2"]
 
 
-def test_frontend_has_separate_trained_camera_lock() -> None:
+def test_frontend_debug_ui_sections_and_hints() -> None:
     root = Path(__file__).resolve().parents[1]
     html = (root / "web" / "index.html").read_text(encoding="utf-8")
     main = (root / "web" / "main.js").read_text(encoding="utf-8")
+    css = (root / "web" / "styles.css").read_text(encoding="utf-8")
 
+    for heading in ["Input", "Gaussian Data", "View", "Camera / Rendering"]:
+        assert f"<h2>{heading}</h2>" in html
+    assert '<aside class="log-panel">' in html
+    assert '<pre id="status">Loading models...</pre>' in html
+    assert "Load Selected Setup" in html
+    assert "Gaussian data source" in html
+    assert "Mesh2Splat LOD files" in html
+    assert "Single trained PLY" in html
+    assert "Mesh-sampled preview" in html
+    assert "Only used for Single trained PLY." in html
+    assert "Only for Transition mode; depth-sorts splats for current camera." in html
+    assert "For Gaussian/Both view with trained splats." in html
+    assert 'id="refreshModelsButton"' in html
     assert 'id="lockCameraButton"' in html
-    assert "function shouldAutoLockCamera()" in main
+    assert "body {" in css
+    assert "overflow: hidden;" in css
+    assert ".log-panel" in css
+    assert "overscroll-behavior: contain;" in css
+    assert "statusBox.scrollTop = statusBox.scrollHeight" in main
+
+
+def test_frontend_control_state_rules_are_centralized() -> None:
+    root = Path(__file__).resolve().parents[1]
+    main = (root / "web" / "main.js").read_text(encoding="utf-8")
+
+    assert "function updateControlAvailability()" in main
+    assert 'const usesTrainedPly = representationSelect.value === "trained"' in main
+    assert 'setControlAvailability(trainedSelect, usesTrainedPly, "Only used for Single trained PLY.")' in main
+    assert 'setControlAvailability(transitionStyleSelect, inTransition, "Only used in Transition mode.")' in main
+    assert 'setControlAvailability(transitionSlider, inTransition, "Only used in Transition mode.")' in main
+    assert "setControlAvailability(lodSelect, hasPrepared && inLodView" in main
+    assert "Disabled in Transition mode because the transition blends LODs automatically." in main
+    assert "setControlAvailability(lockTransitionViewButton, hasPrepared && inTransition" in main
+    assert "setControlAvailability(lockCameraButton, hasPrepared && inLodView" in main
+    assert "function buildStatusContext()" in main
     assert 'state.prepared?.representation === "trained"' in main
     assert 'modeSelect.value === "gaussian" || modeSelect.value === "both"' in main
     assert 'prepared.representation === "trained"' in main

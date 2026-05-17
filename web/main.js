@@ -5,6 +5,7 @@ import { depthSortedOrder, reorderByOrder } from "./splat_sort.js";
 
 const modelSelect = document.querySelector("#modelSelect");
 const uploadInput = document.querySelector("#uploadInput");
+const refreshModelsButton = document.querySelector("#refreshModelsButton");
 const prepareButton = document.querySelector("#prepareButton");
 const convertMesh2SplatButton = document.querySelector("#convertMesh2SplatButton");
 const mesh2splatDensity = document.querySelector("#mesh2splatDensity");
@@ -24,8 +25,16 @@ const statusBox = document.querySelector("#status");
 const viewer = document.querySelector("#viewer");
 const loadingOverlay = document.querySelector("#loadingOverlay");
 const loadingMessage = document.querySelector("#loadingMessage");
+const representationHint = document.querySelector("#representationHint");
+const trainedHint = document.querySelector("#trainedHint");
+const convertHint = document.querySelector("#convertHint");
+const lodHint = document.querySelector("#lodHint");
+const transitionStyleHint = document.querySelector("#transitionStyleHint");
+const transitionHint = document.querySelector("#transitionHint");
+const lockTransitionHint = document.querySelector("#lockTransitionHint");
+const lockCameraHint = document.querySelector("#lockCameraHint");
 const uiControls = [...document.querySelectorAll(".sidebar button, .sidebar input, .sidebar select")];
-const APP_VERSION = "presentation-transition-3";
+const APP_VERSION = "debug-ui-logs-1";
 
 const state = {
   preparedId: null,
@@ -80,12 +89,67 @@ const grid = new THREE.GridHelper(2.4, 12, 0x46515c, 0x252c33);
 scene.add(grid);
 
 function setStatus(message) {
+  const context = buildStatusContext();
   const detail = state.meshStatus ? `\n\n${state.meshStatus}` : "";
-  statusBox.textContent = `${message}${detail}\n\nViewer script: ${APP_VERSION}`;
+  statusBox.textContent = `${context}${message ? `\n\n${message}` : ""}${detail}\n\nViewer script: ${APP_VERSION}`;
+  statusBox.scrollTop = statusBox.scrollHeight;
 }
 
 function setMeshStatus(message) {
   state.meshStatus = message;
+}
+
+function buildStatusContext() {
+  const selectedModel = modelSelect.options[modelSelect.selectedIndex]?.textContent || "none";
+  const prepared = state.prepared;
+  const representation = prepared ? representationLabel(prepared.representation) : representationLabel(representationSelect.value);
+  const gaussianSource = prepared?.gaussian_source || "not loaded";
+  const lodCounts = prepared?.lods?.map((lod) => `${lod.name}:${lod.count.toLocaleString()}`).join(", ") || "not loaded";
+  const lockState = state.transitionViewLock
+    ? `locked (${state.sortedTransitionObjects.size} sorted object(s))`
+    : "unlocked";
+  const currentLod = lodSelect.value || "none";
+  return [
+    "Setup",
+    `model: ${selectedModel}`,
+    `prepared: ${prepared ? representation : "not loaded"}`,
+    `gaussian source: ${gaussianSource}`,
+    `lods: ${lodCounts}`,
+    `view mode: ${viewModeLabel(modeSelect.value)}`,
+    `transition lock: ${lockState}`,
+    `current LOD: ${currentLod}`,
+  ].join("\n");
+}
+
+function representationLabel(value) {
+  if (value === "mesh2splat_lods") return "Mesh2Splat LOD files";
+  if (value === "trained") return "Single trained PLY";
+  if (value === "initialized") return "Mesh-sampled preview";
+  return value || "unknown";
+}
+
+function viewModeLabel(value) {
+  if (value === "transition") return "Transition";
+  if (value === "both") return "Mesh + LOD";
+  if (value === "mesh") return "Mesh";
+  if (value === "gaussian") return "Selected Gaussian LOD";
+  return value || "unknown";
+}
+
+function setHint(element, text, disabled = false) {
+  if (!element) return;
+  element.textContent = text;
+  element.classList.toggle("is-disabled", disabled);
+}
+
+function setControlAvailability(control, enabled, reason = "") {
+  if (!control) return;
+  control.disabled = !enabled;
+  control.title = enabled ? "" : reason;
+  const wrapper = control.closest?.(".control");
+  if (!wrapper) return;
+  if (enabled || !reason) wrapper.removeAttribute("data-disabled-reason");
+  else wrapper.dataset.disabledReason = reason;
 }
 
 function setBusy(active, message = "Preparing viewer data...") {
@@ -117,10 +181,49 @@ function updateBusyMessage(message) {
 
 function updateControlAvailability() {
   if (state.busy) return;
-  for (const control of uiControls) control.disabled = false;
-  setTransitionControlsEnabled(modeSelect.value === "transition");
+  for (const control of uiControls) setControlAvailability(control, true);
+  const hasPrepared = Boolean(state.prepared);
+  const inTransition = modeSelect.value === "transition";
+  const inLodView = modeSelect.value === "gaussian" || modeSelect.value === "both";
+  const usesTrainedPly = representationSelect.value === "trained";
+  const isDemoModel = modelSelect.value?.startsWith("demo:");
+
+  setControlAvailability(trainedSelect, usesTrainedPly, "Only used for Single trained PLY.");
+  setControlAvailability(transitionStyleSelect, inTransition, "Only used in Transition mode.");
+  setControlAvailability(transitionSlider, inTransition, "Only used in Transition mode.");
+  setControlAvailability(lodSelect, hasPrepared && inLodView, inTransition
+    ? "Disabled in Transition mode because the transition blends LODs automatically."
+    : "Load a setup and choose Mesh + LOD or Selected Gaussian LOD.");
+  setControlAvailability(lockTransitionViewButton, hasPrepared && inTransition, "Only for Transition mode; depth-sorts splats for current camera.");
+  setControlAvailability(lockCameraButton, hasPrepared && inLodView, "For Gaussian/Both view with trained splats.");
+  setControlAvailability(convertMesh2SplatButton, !isDemoModel, "Mesh2Splat conversion requires a real mesh file.");
+  setControlAvailability(mesh2splatDensity, !isDemoModel, "Mesh2Splat conversion requires a real mesh file.");
+
+  updateInlineHints();
   updateTransitionLockUi();
   updateCameraLockUi();
+}
+
+function updateInlineHints() {
+  const sourceHints = {
+    mesh2splat_lods: "Uses matching files from data/mesh2splats.",
+    trained: "Builds viewer LODs from one trained .ply.",
+    initialized: "Fallback preview, not trained splats.",
+  };
+  const usesTrainedPly = representationSelect.value === "trained";
+  const inTransition = modeSelect.value === "transition";
+  const inLodView = modeSelect.value === "gaussian" || modeSelect.value === "both";
+  const hasPrepared = Boolean(state.prepared);
+  const isDemoModel = modelSelect.value?.startsWith("demo:");
+
+  setHint(representationHint, sourceHints[representationSelect.value] ?? "");
+  setHint(trainedHint, usesTrainedPly ? "Builds viewer LODs from one trained .ply." : "Only used for Single trained PLY.", !usesTrainedPly);
+  setHint(convertHint, isDemoModel ? "Mesh2Splat conversion requires a real mesh file." : "Creates a new single trained PLY from the selected mesh.", isDemoModel);
+  setHint(lodHint, inLodView && hasPrepared ? "Select the loaded Gaussian LOD for Mesh + LOD or Selected Gaussian LOD." : "Disabled in Transition mode because the transition blends LODs automatically.", !(inLodView && hasPrepared));
+  setHint(transitionStyleHint, inTransition ? "Controls how mesh and splats are blended during Transition mode." : "Only used in Transition mode.", !inTransition);
+  setHint(transitionHint, inTransition ? "Move camera distance through the configured transition range." : "Only used in Transition mode.", !inTransition);
+  setHint(lockTransitionHint, inTransition ? "Only for Transition mode; depth-sorts splats for current camera." : "Only for Transition mode; depth-sorts splats for current camera.", !inTransition);
+  setHint(lockCameraHint, inLodView ? "For Gaussian/Both view with trained splats." : "For Gaussian/Both view with trained splats.", !inLodView);
 }
 
 async function api(path, options = {}) {
@@ -406,9 +509,10 @@ function applyMeshOpacity(object, value) {
 
 function setTransitionControlsEnabled(enabled) {
   if (state.busy) return;
-  transitionSlider.disabled = !enabled;
-  transitionStyleSelect.disabled = !enabled;
-  lockTransitionViewButton.disabled = !enabled || !state.prepared;
+  const active = enabled && modeSelect.value === "transition";
+  setControlAvailability(transitionSlider, active, "Only used in Transition mode.");
+  setControlAvailability(transitionStyleSelect, active, "Only used in Transition mode.");
+  setControlAvailability(lockTransitionViewButton, active && Boolean(state.prepared), "Only for Transition mode; depth-sorts splats for current camera.");
 }
 
 function shouldAutoLockCamera() {
@@ -450,7 +554,8 @@ function toggleCameraLock() {
 
 function updateCameraLockUi() {
   if (!lockCameraButton) return;
-  lockCameraButton.disabled = state.busy || !state.prepared;
+  const inLodView = modeSelect.value === "gaussian" || modeSelect.value === "both";
+  setControlAvailability(lockCameraButton, !state.busy && Boolean(state.prepared) && inLodView, "For Gaussian/Both view with trained splats.");
   const suffix = state.cameraLock.automatic ? " (auto)" : "";
   lockCameraButton.textContent = state.cameraLock.enabled ? `Unlock camera${suffix}` : "Lock camera";
 }
@@ -788,7 +893,7 @@ function toggleTransitionViewLock() {
 function updateTransitionLockUi() {
   if (!lockTransitionViewButton) return;
   const inTransition = modeSelect.value === "transition";
-  lockTransitionViewButton.disabled = state.busy || !state.prepared || !inTransition;
+  setControlAvailability(lockTransitionViewButton, !state.busy && Boolean(state.prepared) && inTransition, "Only for Transition mode; depth-sorts splats for current camera.");
   lockTransitionViewButton.textContent = state.transitionViewLock ? "Unlock transition view" : "Lock transition view";
 }
 
@@ -946,9 +1051,11 @@ async function loadModels() {
     modelSelect.appendChild(option);
   }
   setStatus(`Found ${data.models.length} model option(s).`);
+  updateControlAvailability();
 }
 
-async function loadTrainedGaussians() {
+async function loadTrainedGaussians({ preserveRepresentation = false } = {}) {
+  const previousRepresentation = representationSelect.value;
   const data = await api("/api/trained-gaussians");
   const lodSetData = await api("/api/mesh2splat-lod-sets");
   trainedSelect.innerHTML = "";
@@ -962,11 +1069,28 @@ async function loadTrainedGaussians() {
     option.textContent = model.name;
     trainedSelect.appendChild(option);
   }
-  if (lodSetData.sets.length > 0) {
+  if (preserveRepresentation) {
+    representationSelect.value = previousRepresentation;
+  } else if (lodSetData.sets.length > 0) {
     representationSelect.value = "mesh2splat_lods";
     setStatus(`Found ${lodSetData.sets.length} Mesh2Splat LOD set(s).`);
   } else if (data.models.length === 0) {
     representationSelect.value = "initialized";
+  }
+  updateControlAvailability();
+}
+
+async function refreshModelLists() {
+  if (state.busy) return;
+  setBusy(true, "Refreshing model and Gaussian lists...");
+  try {
+    await loadModels();
+    await loadTrainedGaussians({ preserveRepresentation: true });
+    setStatus("Lists refreshed.");
+  } catch (error) {
+    setStatus(`Refresh failed:\n${error.message}`);
+  } finally {
+    setBusy(false);
   }
 }
 
@@ -1050,7 +1174,8 @@ async function convertSelectedWithMesh2Splat() {
       }),
     });
     representationSelect.value = "trained";
-    await loadTrainedGaussians();
+    await loadTrainedGaussians({ preserveRepresentation: true });
+    representationSelect.value = "trained";
     const match = [...trainedSelect.options].find((option) => option.textContent && prepared.gaussian_source?.endsWith(option.textContent));
     if (match) trainedSelect.value = match.value;
     await applyPreparedModel(prepared);
@@ -1119,10 +1244,13 @@ function animate() {
 }
 
 window.addEventListener("resize", resize);
+refreshModelsButton.addEventListener("click", refreshModelLists);
 prepareButton.addEventListener("click", prepareSelectedModel);
 convertMesh2SplatButton.addEventListener("click", convertSelectedWithMesh2Splat);
 uploadInput.addEventListener("change", uploadModel);
 lodSelect.addEventListener("change", loadSelectedLod);
+modelSelect.addEventListener("change", updateControlAvailability);
+representationSelect.addEventListener("change", updateControlAvailability);
 modeSelect.addEventListener("change", () => updateMode().catch((error) => setStatus(`Mode update failed:\n${error.message}`)));
 transitionStyleSelect.addEventListener("change", updateVisibility);
 backgroundSelect.addEventListener("change", applyBackgroundTheme);

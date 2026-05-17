@@ -2,7 +2,9 @@
 
 Practical seminar prototype for smooth transitions between mesh rendering and 3D Gaussian Splatting-style level of detail.
 
-The current main workflow uses Mesh2Splat-exported `.ply` files for the Gaussian representation and keeps CUDA/`gsplat` training as a possible future improvement. The first version is dependency-light at runtime:
+The current practical workflow uses Mesh2Splat-exported `.ply` files for the Gaussian representation. 
+The repository also includes an experimental NVIDIA/CUDA `gsplat` training path for generating trained splats from 
+synthetic mesh views. The runtime viewer remains dependency-light:
 
 - Uses Mesh2Splat LOD exports as the primary practical Gaussian source.
 - Uses PyTorch tensors for the inspectable fallback renderer.
@@ -20,7 +22,8 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-For the main Mesh2Splat workflow, the Python app does not require CUDA. CUDA-enabled PyTorch and `gsplat` are optional future-work tools for experimenting with direct Gaussian training.
+For the Mesh2Splat workflow, the Python app does not require CUDA. CUDA-enabled PyTorch and `gsplat` are only needed for the 
+experimental NVIDIA training path.
 
 ### Windows Setup Script
 
@@ -176,7 +179,7 @@ Use this only if your Mesh2Splat build supports
 those arguments or you have patched Mesh2Splat to expose a headless export path.
 Otherwise, export from the GUI and place the `.ply` files in `data/mesh2splats/`.
 
-## Future Improvement: CUDA/gsplat Training
+## Experimental NVIDIA/CUDA gsplat Training
 
 Generate a synthetic COLMAP-style dataset from a mesh and create the `gsplat` training command:
 
@@ -184,21 +187,19 @@ Generate a synthetic COLMAP-style dataset from a mesh and create the `gsplat` tr
 python scripts/train_gaussians_from_mesh.py --mesh data/meshes/my_model.glb --config configs/default.yaml
 ```
 
-After installing and configuring `gsplat`, training can be run directly. This is not the current main path; it is kept as future work for producing trained Gaussian splats without manual Mesh2Splat export.
+After installing and configuring CUDA-enabled PyTorch and `gsplat` on an NVIDIA machine, training can be run directly. 
+This is not the main Mesh2Splat workflow; it is an experimental path for producing trained Gaussian splats 
+without manual Mesh2Splat export.
 
 ```powershell
 python scripts/train_gaussians_from_mesh.py --mesh data/meshes/my_model.glb --config configs/default.yaml --run-trainer
 ```
 
-On the NVIDIA/CUDA machine, first run:
+On the NVIDIA/CUDA machine, first run the environment check:
 
 ```powershell
 python scripts/check_cuda_training_env.py --config configs/default.yaml
 ```
-
-See [CUDA_TRAINING.md](docs/CUDA_TRAINING.md) for the full transfer/training workflow.
-See [GSPLAT_SETUP.md](docs/GSPLAT_SETUP.md) for a small standalone `gsplat` smoke-test environment.
-See [HYBRID_GAUSSIAN_WORKFLOW.md](docs/HYBRID_GAUSSIAN_WORKFLOW.md) for the recommended Mesh2Splat density/scale sweep and the research-oriented `gsplat` training path.
 
 Expected experimental flow:
 
@@ -257,4 +258,5 @@ This repository is published under the MIT License. See [LICENSE](LICENSE).
 This is a seminar prototype, not a production Gaussian Splatting system.
 The current main path is Mesh2Splat export plus viewer-side LOD transitions.
 The software renderer is deliberately simple and can be slow for `20_000` Gaussians on CPU.
-Direct CUDA/`gsplat` training and GPU rasterization are future improvements.
+The NVIDIA/CUDA `gsplat` training path is experimental and separate from the Mesh2Splat workflow.
+GPU rasterization remains future work.

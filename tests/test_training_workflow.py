@@ -226,6 +226,49 @@ def test_trained_gaussian_alignment_corrects_signed_axis_permutation() -> None:
     assert np.allclose(aligned_np.max(axis=0), mesh_vertices.max(axis=0), atol=1.0e-4)
 
 
+def test_mesh2splat_lod_alignment_reuses_dense_lod_transform() -> None:
+    mesh_vertices = np.asarray(
+        [
+            [-1.0, -0.5, -0.2],
+            [1.0, -0.5, -0.2],
+            [0.8, 0.45, -0.1],
+            [-1.0, 0.5, -0.2],
+            [-1.0, -0.5, 0.2],
+            [1.0, -0.5, 0.2],
+            [1.0, 0.5, 0.2],
+            [-0.7, 0.35, 0.15],
+        ],
+        dtype=np.float32,
+    )
+    rotation = np.asarray([[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+    dense_xyz = (mesh_vertices @ rotation.T) * 2.5 + np.asarray([4.0, -3.0, 1.5], dtype=np.float32)
+    sparse_indices = [0, 2, 5, 7]
+    sparse_xyz = dense_xyz[sparse_indices]
+
+    dense = GaussianCloud(
+        xyz=torch.as_tensor(dense_xyz, dtype=torch.float32),
+        scale=torch.full((len(dense_xyz), 3), 0.05),
+        color=torch.ones((len(dense_xyz), 3)),
+        opacity=torch.ones((len(dense_xyz), 1)),
+        name="dense",
+    )
+    sparse = GaussianCloud(
+        xyz=torch.as_tensor(sparse_xyz, dtype=torch.float32),
+        scale=torch.full((len(sparse_xyz), 3), 0.05),
+        color=torch.ones((len(sparse_xyz), 3)),
+        opacity=torch.ones((len(sparse_xyz), 1)),
+        name="sparse",
+    )
+
+    alignment = ModelStore._gaussian_alignment_to_normalized_mesh(dense, mesh_vertices)
+    aligned_dense = ModelStore._apply_gaussian_alignment(dense, alignment).xyz.detach().cpu().numpy()
+    aligned_sparse = ModelStore._apply_gaussian_alignment(sparse, alignment).xyz.detach().cpu().numpy()
+
+    assert np.allclose(aligned_dense.min(axis=0), mesh_vertices.min(axis=0), atol=1.0e-4)
+    assert np.allclose(aligned_dense.max(axis=0), mesh_vertices.max(axis=0), atol=1.0e-4)
+    assert np.allclose(aligned_sparse, mesh_vertices[sparse_indices], atol=1.0e-4)
+
+
 def test_mesh2splat_command_uses_headless_contract(tmp_path: Path) -> None:
     config = Mesh2SplatConfig(
         executable=tmp_path / "Mesh2Splat.exe",

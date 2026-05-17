@@ -83,6 +83,50 @@ def _mean_nearest_distance(points: np.ndarray, targets: np.ndarray) -> float:
         return total / max(len(points), 1)
 
 
+def _robust_bounds(
+    points: np.ndarray,
+    weights: np.ndarray | None = None,
+    low: float = 0.01,
+    high: float = 0.99,
+) -> tuple[np.ndarray, np.ndarray]:
+    values = np.asarray(points, dtype=np.float32)
+    finite = np.isfinite(values).all(axis=1)
+    values = values[finite]
+    if len(values) == 0:
+        zeros = np.zeros(3, dtype=np.float32)
+        return zeros, zeros
+    if len(values) < 20:
+        return values.min(axis=0), values.max(axis=0)
+
+    if weights is None:
+        return (
+            np.quantile(values, low, axis=0).astype(np.float32),
+            np.quantile(values, high, axis=0).astype(np.float32),
+        )
+
+    clean_weights = np.asarray(weights, dtype=np.float32).reshape(-1)[finite]
+    if clean_weights.shape[0] != len(values) or not np.isfinite(clean_weights).all() or float(clean_weights.sum()) <= 1.0e-8:
+        return (
+            np.quantile(values, low, axis=0).astype(np.float32),
+            np.quantile(values, high, axis=0).astype(np.float32),
+        )
+    mins = []
+    maxs = []
+    for axis in range(3):
+        mins.append(_weighted_quantile(values[:, axis], clean_weights, low))
+        maxs.append(_weighted_quantile(values[:, axis], clean_weights, high))
+    return np.asarray(mins, dtype=np.float32), np.asarray(maxs, dtype=np.float32)
+
+
+def _weighted_quantile(values: np.ndarray, weights: np.ndarray, quantile: float) -> np.float32:
+    order = np.argsort(values)
+    sorted_values = values[order]
+    sorted_weights = weights[order]
+    cumulative = np.cumsum(sorted_weights)
+    cutoff = quantile * cumulative[-1]
+    return np.float32(sorted_values[np.searchsorted(cumulative, cutoff, side="left")])
+
+
 @dataclass
 class PreparedModel:
     model_id: str
@@ -91,6 +135,14 @@ class PreparedModel:
     source: str
     gaussian_source: str | None = None
     representation: str = "initialized"
+
+
+@dataclass(frozen=True)
+class GaussianAlignment:
+    cloud_center: np.ndarray
+    mesh_center: np.ndarray
+    rotation: np.ndarray
+    scale_factor: np.float32
 
 
 class ModelStore:
@@ -220,10 +272,10 @@ class ModelStore:
                     raise FileNotFoundError(
                         f"No Mesh2Splat LOD .ply set was found for mesh {mesh.name!r} under data/mesh2splats."
                     )
-                lods = {
-                    str(count): self._normalize_gaussian_to_mesh(load_trained_gaussian_ply(path), mesh_center, mesh_radius)
-                    for count, path in sorted(lod_paths.items())
-                }
+                loaded_lods = {count: load_trained_gaussian_ply(path) for count, path in sorted(lod_paths.items())}
+                reference_count = max(loaded_lods, key=lambda count: loaded_lods[count].count)
+                alignment = self._gaussian_alignment_to_normalized_mesh(loaded_lods[reference_count], mesh.vertices)
+                lods = {str(count): self._apply_gaussian_alignment(cloud, alignment) for count, cloud in loaded_lods.items()}
                 gaussian_source = "; ".join(str(path) for _, path in sorted(lod_paths.items()))
             else:
                 points, normals, colors = mesh.sample_surface(max(lod_counts), seed=seed)
@@ -317,30 +369,51 @@ class ModelStore:
 
     @staticmethod
     def _align_gaussian_to_normalized_mesh(cloud: GaussianCloud, mesh_vertices: np.ndarray) -> GaussianCloud:
+        alignment = ModelStore._gaussian_alignment_to_normalized_mesh(cloud, mesh_vertices)
+        return ModelStore._apply_gaussian_alignment(cloud, alignment)
+
+    @staticmethod
+    def _gaussian_alignment_to_normalized_mesh(cloud: GaussianCloud, mesh_vertices: np.ndarray) -> GaussianAlignment:
         if cloud.count <= 0 or len(mesh_vertices) == 0:
-            return cloud
-        device = cloud.xyz.device
+            return GaussianAlignment(
+                cloud_center=np.zeros(3, dtype=np.float32),
+                mesh_center=np.zeros(3, dtype=np.float32),
+                rotation=np.eye(3, dtype=np.float32),
+                scale_factor=np.float32(1.0),
+            )
         mesh_np = np.asarray(mesh_vertices, dtype=np.float32)
         cloud_np = cloud.xyz.detach().cpu().numpy().astype(np.float32)
+        opacity_np = cloud.opacity.detach().cpu().numpy().reshape(-1)
+        scale_np = cloud.scale.detach().cpu().numpy()
+        scale_weight = scale_np.max(axis=1) if scale_np.ndim == 2 else scale_np.reshape(-1)
+        weights = np.clip(opacity_np, 0.0, 1.0) * np.maximum(scale_weight, 1.0e-6)
 
-        mesh_min = mesh_np.min(axis=0)
-        mesh_max = mesh_np.max(axis=0)
-        cloud_min = cloud_np.min(axis=0)
-        cloud_max = cloud_np.max(axis=0)
+        mesh_min, mesh_max = _robust_bounds(mesh_np)
+        cloud_min, cloud_max = _robust_bounds(cloud_np, weights=weights)
         mesh_center_np = (mesh_min + mesh_max) * 0.5
         cloud_center_np = (cloud_min + cloud_max) * 0.5
         mesh_extent = max(float(np.max(mesh_max - mesh_min)), 1.0e-6)
         cloud_extent = max(float(np.max(cloud_max - cloud_min)), 1.0e-6)
         scale_factor_np = np.clip(mesh_extent / cloud_extent, 0.01, 100.0).astype(np.float32)
         rotation_np = _best_axis_permutation(cloud_np, mesh_np, cloud_center_np, mesh_center_np, scale_factor_np)
+        return GaussianAlignment(
+            cloud_center=cloud_center_np.astype(np.float32),
+            mesh_center=mesh_center_np.astype(np.float32),
+            rotation=rotation_np.astype(np.float32),
+            scale_factor=scale_factor_np,
+        )
 
-        rotation = torch.as_tensor(rotation_np, dtype=cloud.xyz.dtype, device=device)
-        mesh_center = torch.as_tensor(mesh_center_np, dtype=cloud.xyz.dtype, device=device)
-        cloud_center = torch.as_tensor(cloud_center_np, dtype=cloud.xyz.dtype, device=device)
-        scale_factor = torch.as_tensor(float(scale_factor_np), dtype=cloud.xyz.dtype, device=device)
+    @staticmethod
+    def _apply_gaussian_alignment(cloud: GaussianCloud, alignment: GaussianAlignment) -> GaussianCloud:
+        device = cloud.xyz.device
+        rotation = torch.as_tensor(alignment.rotation, dtype=cloud.xyz.dtype, device=device)
+        mesh_center = torch.as_tensor(alignment.mesh_center, dtype=cloud.xyz.dtype, device=device)
+        cloud_center = torch.as_tensor(alignment.cloud_center, dtype=cloud.xyz.dtype, device=device)
+        scale_factor = torch.as_tensor(float(alignment.scale_factor), dtype=cloud.xyz.dtype, device=device)
+        scale = cloud.scale * scale_factor
         return GaussianCloud(
             xyz=((cloud.xyz - cloud_center[None, :]) @ rotation.T) * scale_factor + mesh_center[None, :],
-            scale=cloud.scale * scale_factor,
+            scale=scale,
             color=cloud.color,
             opacity=cloud.opacity,
             rotation=cloud.rotation,
