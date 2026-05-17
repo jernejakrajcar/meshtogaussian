@@ -1,18 +1,21 @@
 {
   "command": [
-    "C:\\Users\\jerne\\Documents\\faks\\magisterij\\1.letnik\\nrg\\seminar\\meshtogaussian\\.venv\\Scripts\\python.exe",
-    "..\\gsplat\\examples\\simple_trainer.py",
+    "C:\\Users\\Uporabnik\\Documents\\faks\\magisterij\\1.letnik\\nrg\\meshtogaussian\\.venv-gsplat310\\Scripts\\python.exe",
+    "C:\\Users\\Uporabnik\\Documents\\faks\\magisterij\\1.letnik\\nrg\\gsplat\\examples\\simple_trainer.py",
     "default",
     "--data_dir",
-    "data\\generated_datasets\\sourdough",
+    "C:\\Users\\Uporabnik\\Documents\\faks\\magisterij\\1.letnik\\nrg\\meshtogaussian\\data\\generated_datasets_textured\\sourdough",
     "--data_factor",
     "1",
     "--result_dir",
-    "data\\trained_gaussians\\sourdough",
+    "C:\\Users\\Uporabnik\\Documents\\faks\\magisterij\\1.letnik\\nrg\\meshtogaussian\\data\\trained_gaussians\\sourdough",
     "--max_steps",
-    "3000"
+    "30000",
+    "--save_ply",
+    "--ply_steps",
+    "30000"
   ],
-  "cwd": "..\\gsplat",
-  "result_dir": "data\\trained_gaussians\\sourdough",
+  "cwd": "C:\\Users\\Uporabnik\\Documents\\faks\\magisterij\\1.letnik\\nrg\\gsplat",
+  "result_dir": "C:\\Users\\Uporabnik\\Documents\\faks\\magisterij\\1.letnik\\nrg\\meshtogaussian\\data\\trained_gaussians\\sourdough",
   "executed": false
 }
