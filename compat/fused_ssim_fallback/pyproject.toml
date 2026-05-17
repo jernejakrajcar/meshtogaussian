@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fused-ssim"
+version = "0.0.0"
+description = "Pure PyTorch fallback for gsplat example trainer fused_ssim import."
+requires-python = ">=3.8"
+
+[tool.setuptools]
+packages = ["fused_ssim"]
