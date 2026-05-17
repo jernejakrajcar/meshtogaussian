@@ -6,9 +6,8 @@
 # these rules only prevent newly added models/splats/outputs from being staged.
 /data/outputs/
 /data/outputs_*/
-/data/generated_datasets/
 /data/generated_datasets_smoke/
-/data/generated_datasets_*/
+/data/tmp_*/
 /data/trained_gaussians/
 /data/source/uploads/
 /data/meshes/
@@ -25,3 +24,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+/.venv-gsplat/
+/.venv-gsplat211/
+/.venv-gsplat310/
+/.venv-gsplat311/

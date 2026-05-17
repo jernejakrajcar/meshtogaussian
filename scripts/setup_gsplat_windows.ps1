@@ -1,9 +1,12 @@
 param(
-  [string]$PythonVersion = "3.13",
+  [string]$PythonVersion = "3.11",
   [string]$PythonExe = "",
   [string]$VenvPath = ".venv-gsplat",
   [string]$TorchIndexUrl = "https://download.pytorch.org/whl/cu130",
+  [string]$TorchVersion = "2.11.0",
   [string]$GsplatIndexUrl = "",
+  [string]$GsplatSourcePath = "",
+  [string]$GsplatRef = "v1.5.3",
   [switch]$SkipCudaCheck,
   [switch]$SkipSmokeTest
 )
@@ -53,6 +56,50 @@ function Invoke-NativeCapture {
   }
 }
 
+function Invoke-Checked {
+  param(
+    [scriptblock]$Command,
+    [string]$ErrorMessage
+  )
+  & $Command
+  if ($LASTEXITCODE -ne 0) {
+    Fail $ErrorMessage
+  }
+}
+
+function Ensure-GsplatSubmodules {
+  param([string]$RepoPath)
+  $glmHeader = Join-Path $RepoPath "gsplat\cuda\csrc\third_party\glm\glm\gtc\type_ptr.hpp"
+  if (Test-Path -LiteralPath $glmHeader) {
+    return
+  }
+  Write-Host "gsplat third-party files are missing. Initializing git submodules..."
+  $git = Find-CommandPath "git"
+  if (-not $git) {
+    Fail "git was not found. Run this manually first: git -C `"$RepoPath`" submodule update --init --recursive"
+  }
+  Invoke-Checked { & $git -C $RepoPath submodule update --init --recursive } "Could not initialize gsplat submodules."
+  if (-not (Test-Path -LiteralPath $glmHeader)) {
+    Fail "gsplat GLM headers are still missing after submodule init: $glmHeader"
+  }
+}
+
+function Ensure-GsplatRef {
+  param(
+    [string]$RepoPath,
+    [string]$Ref
+  )
+  if (-not $Ref) {
+    return
+  }
+  $git = Find-CommandPath "git"
+  if (-not $git) {
+    Fail "git was not found. Install git or re-run without -GsplatRef."
+  }
+  Write-Host "Checking out gsplat ref $Ref..."
+  Invoke-Checked { & $git -C $RepoPath -c advice.detachedHead=false checkout $Ref } "Could not checkout gsplat ref $Ref."
+}
+
 if ($PythonExe) {
   Write-Host "Checking Python executable $PythonExe..."
   if (-not (Test-Path -LiteralPath $PythonExe)) {
@@ -69,7 +116,7 @@ if ($PythonExe) {
   if ((($pyList.Output | Out-String) -notmatch [regex]::Escape("-V:$PythonVersion"))) {
     Write-Host "Detected Python runtimes:"
     Write-Host ($pyList.Output | Out-String)
-    Fail "Python $PythonVersion was not found through the py launcher. Install Python 3.13 or run this script with -PythonVersion 3.12 / 3.11, or pass -PythonExe C:\path\to\python.exe."
+    Fail "Python $PythonVersion was not found through the py launcher. Install that Python version, choose one listed above with -PythonVersion, or pass -PythonExe C:\path\to\python.exe."
   }
   $pythonLauncher = "py"
   $pythonLauncherArgs = @("-$PythonVersion")
@@ -115,27 +162,34 @@ if (-not (Test-Path -LiteralPath $python)) {
 }
 
 Write-Host "Upgrading packaging tools..."
-& $python -m pip install --upgrade pip setuptools wheel ninja
+Invoke-Checked { & $python -m pip install --upgrade pip "setuptools<82" wheel ninja numpy } "Could not install packaging tools."
 
-Write-Host "Installing CUDA-enabled PyTorch from $TorchIndexUrl..."
-& $python -m pip install --upgrade torch --index-url $TorchIndexUrl
+Write-Host "Installing CUDA-enabled PyTorch $TorchVersion from $TorchIndexUrl..."
+Invoke-Checked { & $python -m pip install --force-reinstall "torch==$TorchVersion" --index-url $TorchIndexUrl } "Could not install CUDA-enabled PyTorch."
+
+Write-Host "Ensuring build helper packages are still available..."
+Invoke-Checked { & $python -m pip install --upgrade "setuptools<82" wheel ninja numpy } "Could not install build helper packages."
 
 Write-Host "Installing gsplat..."
-if ($GsplatIndexUrl) {
-  & $python -m pip install --upgrade gsplat --index-url $GsplatIndexUrl
+if ($GsplatSourcePath) {
+  if (-not (Test-Path -LiteralPath $GsplatSourcePath)) {
+    Fail "gsplat source path was not found: $GsplatSourcePath"
+  }
+  Ensure-GsplatRef $GsplatSourcePath $GsplatRef
+  Ensure-GsplatSubmodules $GsplatSourcePath
+  Invoke-Checked { & $python -m pip install --force-reinstall --no-build-isolation --no-deps $GsplatSourcePath } "Could not build/install gsplat from source."
+} elseif ($GsplatIndexUrl) {
+  Invoke-Checked { & $python -m pip install --upgrade gsplat --index-url $GsplatIndexUrl } "Could not install gsplat."
 } else {
-  & $python -m pip install --upgrade gsplat
+  Invoke-Checked { & $python -m pip install --upgrade gsplat } "Could not install gsplat."
 }
 
 Write-Host "Checking PyTorch CUDA..."
-& $python -c "import torch; print('torch', torch.__version__); print('torch cuda', torch.version.cuda); print('cuda available', torch.cuda.is_available()); print('device', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none')"
+Invoke-Checked { & $python -c "import torch; print('torch', torch.__version__); print('torch cuda', torch.version.cuda); print('cuda available', torch.cuda.is_available()); print('device', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none')" } "PyTorch CUDA check failed."
 
 if (-not $SkipSmokeTest) {
   Write-Host "Running gsplat smoke test inside the Visual Studio developer environment..."
-  $repoRoot = (Get-Location).Path
-  $smokeScript = Join-Path $repoRoot "scripts\smoke_gsplat.py"
-  $cmd = "`"$vcvars64`" && set CL=/Zc:preprocessor %CL% && cd /d `"$repoRoot`" && `"$python`" `"$smokeScript`" && exit /b 0 || exit /b 1"
-  & cmd.exe /c $cmd
+  & powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\run_gsplat_smoke_windows.ps1" -VenvPath $VenvPath -CleanTorchExtensionCache
   if ($LASTEXITCODE -ne 0) {
     Fail "gsplat smoke test failed."
   }

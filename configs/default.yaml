@@ -71,6 +71,14 @@ training_dataset:
   elevations: [-30.0, -10.0, 10.0, 30.0]
   views_per_elevation: 24
   initial_point_count: 20000
+  research_elevations: [-45.0, -30.0, -15.0, 0.0, 15.0, 30.0, 45.0]
+  research_views_per_elevation: 36
+  research_initial_point_count: 100000
+
+mesh2splat_sweep:
+  densities: [0.5, 1.0, 1.5, 2.0, 3.0]
+  output_dir: data/mesh2splats
+  sample_count: 80000
 
 gsplat:
   repo: ../gsplat

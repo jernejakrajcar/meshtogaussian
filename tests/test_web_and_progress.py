@@ -84,6 +84,34 @@ def test_fastapi_prepare_returns_viewer_transition_config() -> None:
     assert payload["viewer"]["transition"]["lod_ranges"]["10"] == [3.0, 2.3]
 
 
+def test_fastapi_prepare_returns_mesh_transform_and_source_asset(tmp_path: Path) -> None:
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+    from src.web.app import create_app
+
+    meshes = tmp_path / "meshes"
+    meshes.mkdir(parents=True)
+    mesh = meshes / "textured shell.obj"
+    mesh.write_text(
+        "\n".join(["v 0 0 0", "v 2 0 0", "v 0 2 0", "f 1 2 3"]),
+        encoding="utf-8",
+    )
+
+    client = TestClient(create_app("configs/smoke.yaml", data_dir=tmp_path))
+    model_id = next(model["id"] for model in client.get("/api/models").json()["models"] if model["name"] == mesh.name)
+    response = client.post("/api/prepare", json={"model_id": model_id, "lod_counts": [10]})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mesh"]["center"] == [1.0, 1.0, 0.0]
+    assert payload["mesh"]["radius"] > 0
+    assert payload["mesh"]["source_url"].endswith("/textured%20shell.obj")
+
+    asset_response = client.get(payload["mesh"]["source_url"])
+    assert asset_response.status_code == 200
+    assert "v 2 0 0" in asset_response.text
+
+
 def test_fastapi_mesh2splat_conversion_endpoint_uses_trained_pipeline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("fastapi")
     pytest.importorskip("httpx")
@@ -153,7 +181,7 @@ def test_fastapi_mesh2splat_conversion_endpoint_uses_trained_pipeline(tmp_path: 
     payload = response.json()
     assert payload["representation"] == "trained"
     assert payload["gaussian_source"].endswith("tiny_mesh2splat.ply")
-    assert payload["lods"][0]["name"] == "10"
+    assert payload["lods"][0]["name"] == "4"
     assert payload["lods"][0]["count"] == 4
 
 
@@ -207,3 +235,68 @@ def test_fastapi_prepare_uses_mesh2splat_lod_set(tmp_path: Path) -> None:
     assert payload["representation"] == "mesh2splat_lods"
     assert [lod["name"] for lod in payload["lods"]] == ["300", "800"]
     assert sorted(payload["viewer"]["transition"]["lod_ranges"]) == ["300", "800"]
+
+
+def test_fastapi_prepare_trained_returns_representation_metadata(tmp_path: Path) -> None:
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+    from src.web.app import create_app
+
+    meshes = tmp_path / "meshes"
+    trained = tmp_path / "trained_gaussians"
+    meshes.mkdir(parents=True)
+    trained.mkdir(parents=True)
+    (meshes / "tiny.obj").write_text(
+        "\n".join(["v 0 0 0", "v 1 0 0", "v 0 1 0", "f 1 2 3"]),
+        encoding="utf-8",
+    )
+    (trained / "tiny_trained.ply").write_text(
+        "\n".join(
+            [
+                "ply",
+                "format ascii 1.0",
+                "element vertex 2",
+                "property float x",
+                "property float y",
+                "property float z",
+                "property float opacity",
+                "property float scale",
+                "property uchar red",
+                "property uchar green",
+                "property uchar blue",
+                "end_header",
+                "0 0 0 0.9 0.02 255 0 0",
+                "1 0 0 0.9 0.02 0 255 0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    client = TestClient(create_app("configs/smoke.yaml", data_dir=tmp_path))
+    model_id = next(model["id"] for model in client.get("/api/models").json()["models"] if model["name"] == "tiny.obj")
+    trained_id = next(model["id"] for model in client.get("/api/trained-gaussians").json()["models"] if model["name"] == "tiny_trained.ply")
+    response = client.post(
+        "/api/prepare",
+        json={"model_id": model_id, "representation": "trained", "trained_ply_id": trained_id},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["representation"] == "trained"
+    assert payload["gaussian_source"].endswith("tiny_trained.ply")
+    assert [lod["name"] for lod in payload["lods"]] == ["2"]
+    assert sorted(payload["viewer"]["transition"]["lod_ranges"]) == ["2"]
+
+
+def test_frontend_has_separate_trained_camera_lock() -> None:
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "web" / "index.html").read_text(encoding="utf-8")
+    main = (root / "web" / "main.js").read_text(encoding="utf-8")
+
+    assert 'id="lockCameraButton"' in html
+    assert "function shouldAutoLockCamera()" in main
+    assert 'state.prepared?.representation === "trained"' in main
+    assert 'modeSelect.value === "gaussian" || modeSelect.value === "both"' in main
+    assert 'prepared.representation === "trained"' in main
+    assert "lodSelect.selectedIndex = lodSelect.options.length - 1" in main
+    assert "function lockTransitionView()" in main

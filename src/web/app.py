@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from src.conversion.mesh2splat_runner import Mesh2SplatConfig, convert_mesh_to_gaussians
 from src.core.config import load_config
@@ -54,7 +55,7 @@ def create_app(config_path: str | Path = "configs/default.yaml", data_dir: str |
             "elevation_degrees": float(demo_cfg.get("elevation_degrees", 10.0)),
             "transition": cfg.get("transition", {}),
         }
-        if payload.get("representation") == "mesh2splat_lods":
+        if payload.get("representation") in {"mesh2splat_lods", "trained"}:
             payload["viewer"]["transition"] = _proportional_transition_for_lods(
                 [str(lod["name"]) for lod in payload.get("lods", [])],
                 cfg.get("transition", {}),
@@ -166,6 +167,22 @@ def create_app(config_path: str | Path = "configs/default.yaml", data_dir: str |
         except Exception as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @app.get("/api/model/{model_id}/source/{asset_path:path}")
+    def source_asset(model_id: str, asset_path: str):
+        try:
+            prepared = store.get_prepared(model_id)
+            if prepared.source == "generated":
+                raise FileNotFoundError("Generated demo models do not have source assets.")
+            source_path = Path(prepared.source).resolve()
+            requested = (source_path.parent / unquote(asset_path)).resolve()
+            if source_path.parent not in [requested, *requested.parents]:
+                raise PermissionError("Source asset path must stay next to the source model.")
+            if not requested.exists() or not requested.is_file():
+                raise FileNotFoundError(f"Source asset was not found: {asset_path}")
+            return FileResponse(requested)
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     app.state.model_store = store
     return app
 
@@ -195,5 +212,6 @@ def _proportional_transition_for_lods(
     return {
         "mesh_fade_start": mesh_fade_start,
         "mesh_fade_end": mesh_fade_end,
+        "lod_mode": "progressive",
         "lod_ranges": ranges,
     }

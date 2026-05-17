@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Mesh-to-Gaussian Visualizer</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=presentation-transition-3" />
   </head>
   <body>
     <main class="app">
@@ -55,9 +55,31 @@
         </label>
 
         <label>
+          Transition style
+          <select id="transitionStyleSelect">
+            <option value="additive">Keep mesh + add detail</option>
+            <option value="crossfade">Cross-fade mesh to splats</option>
+            <option value="dense">Dense LOD cutover</option>
+            <option value="detail">Detail build-up</option>
+          </select>
+        </label>
+
+        <label>
+          Background
+          <select id="backgroundSelect">
+            <option value="dark">Dark grid</option>
+            <option value="light">Light grid</option>
+          </select>
+        </label>
+
+        <label>
           Transition position <span id="transitionValue">0%</span>
           <input id="transitionSlider" type="range" min="0" max="1" step="0.01" value="0" />
         </label>
+
+        <button id="lockTransitionViewButton" type="button">Lock transition view</button>
+
+        <button id="lockCameraButton" type="button">Lock camera</button>
 
         <label>
           Gaussian LOD
@@ -66,7 +88,7 @@
 
         <label>
           Point size
-          <input id="pointSize" type="range" min="0.01" max="0.15" step="0.005" value="0.045" />
+          <input id="pointSize" type="range" min="0.01" max="0.4" step="0.005" value="0.08" />
         </label>
 
         <label>
@@ -78,7 +100,15 @@
       </aside>
 
       <section class="viewport">
-        <div id="viewer"></div>
+        <div id="viewer">
+          <div id="loadingOverlay" class="loading-overlay" hidden>
+            <div class="loading-panel">
+              <div class="spinner" aria-hidden="true"></div>
+              <strong>Preparing viewer data</strong>
+              <span id="loadingMessage">Starting...</span>
+            </div>
+          </div>
+        </div>
       </section>
     </main>
 
@@ -90,6 +120,6 @@
         }
       }
     </script>
-    <script type="module" src="/static/main.js"></script>
+    <script type="module" src="/static/main.js?v=presentation-transition-3"></script>
   </body>
 </html>

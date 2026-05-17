@@ -13,6 +13,7 @@ class GaussianCloud:
     scale: torch.Tensor
     color: torch.Tensor
     opacity: torch.Tensor
+    rotation: torch.Tensor | None = None
     name: str = "lod"
 
     def to(self, device: torch.device | str) -> "GaussianCloud":
@@ -21,6 +22,7 @@ class GaussianCloud:
             scale=self.scale.to(device),
             color=self.color.to(device),
             opacity=self.opacity.to(device),
+            rotation=None if self.rotation is None else self.rotation.to(device),
             name=self.name,
         )
 
@@ -29,9 +31,12 @@ class GaussianCloud:
         return int(self.xyz.shape[0])
 
     def memory_bytes(self) -> int:
+        tensors = [self.xyz, self.scale, self.color, self.opacity]
+        if self.rotation is not None:
+            tensors.append(self.rotation)
         return sum(
             tensor.numel() * tensor.element_size()
-            for tensor in [self.xyz, self.scale, self.color, self.opacity]
+            for tensor in tensors
         )
 
     def save_npz(self, path: str | Path) -> None:
@@ -42,6 +47,7 @@ class GaussianCloud:
             scale=self.scale.detach().cpu().numpy(),
             color=self.color.detach().cpu().numpy(),
             opacity=self.opacity.detach().cpu().numpy(),
+            rotation=None if self.rotation is None else self.rotation.detach().cpu().numpy(),
             name=self.name,
         )
 
@@ -53,5 +59,10 @@ class GaussianCloud:
             scale=torch.as_tensor(data["scale"], dtype=torch.float32, device=device),
             color=torch.as_tensor(data["color"], dtype=torch.float32, device=device),
             opacity=torch.as_tensor(data["opacity"], dtype=torch.float32, device=device),
+            rotation=(
+                torch.as_tensor(data["rotation"], dtype=torch.float32, device=device)
+                if "rotation" in data and data["rotation"].shape
+                else None
+            ),
             name=str(data.get("name", Path(path).stem)),
         )

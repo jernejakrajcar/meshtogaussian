@@ -198,6 +198,7 @@ python scripts/check_cuda_training_env.py --config configs/default.yaml
 
 See [CUDA_TRAINING.md](docs/CUDA_TRAINING.md) for the full transfer/training workflow.
 See [GSPLAT_SETUP.md](docs/GSPLAT_SETUP.md) for a small standalone `gsplat` smoke-test environment.
+See [HYBRID_GAUSSIAN_WORKFLOW.md](docs/HYBRID_GAUSSIAN_WORKFLOW.md) for the recommended Mesh2Splat density/scale sweep and the research-oriented `gsplat` training path.
 
 Expected experimental flow:
 

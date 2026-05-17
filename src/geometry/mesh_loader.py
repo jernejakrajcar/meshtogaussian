@@ -12,7 +12,11 @@ class MeshAsset:
     vertices: np.ndarray
     faces: np.ndarray
     vertex_colors: np.ndarray
+    uvs: np.ndarray | None = None
+    texture_image: np.ndarray | None = None
     name: str = "mesh"
+    center: np.ndarray | None = None
+    radius: float = 1.0
 
     @classmethod
     def load(
@@ -39,7 +43,15 @@ class MeshAsset:
         vertices = np.asarray(loaded.vertices, dtype=np.float32)
         faces = np.asarray(loaded.faces, dtype=np.int64)
         colors = cls._extract_vertex_colors(loaded, len(vertices), fallback_color)
-        return cls(vertices=vertices, faces=faces, vertex_colors=colors, name=Path(path).stem)
+        uvs, texture_image = cls._extract_texture_data(loaded, len(vertices))
+        return cls(
+            vertices=vertices,
+            faces=faces,
+            vertex_colors=colors,
+            uvs=uvs,
+            texture_image=texture_image,
+            name=Path(path).stem,
+        )
 
     @classmethod
     def create_demo_shape(cls, shape: str, color: list[float] | None = None) -> "MeshAsset":
@@ -61,6 +73,27 @@ class MeshAsset:
             if arr.shape[1] >= 3:
                 colors = arr[:, :3] / 255.0
         return np.clip(colors, 0.0, 1.0).astype(np.float32)
+
+    @staticmethod
+    def _extract_texture_data(mesh: Any, count: int) -> tuple[np.ndarray | None, np.ndarray | None]:
+        visual = getattr(mesh, "visual", None)
+        raw_uvs = getattr(visual, "uv", None)
+        material = getattr(visual, "material", None)
+        image = getattr(material, "baseColorTexture", None)
+        if image is None:
+            image = getattr(material, "image", None)
+        if raw_uvs is None or image is None or len(raw_uvs) != count:
+            return None, None
+
+        uvs = np.asarray(raw_uvs, dtype=np.float32)
+        texture = np.asarray(image.convert("RGBA") if hasattr(image, "convert") else image, dtype=np.float32)
+        if texture.ndim != 3 or texture.shape[2] < 3:
+            return None, None
+        rgb = texture[:, :, :3] / 255.0
+        if texture.shape[2] >= 4:
+            alpha = texture[:, :, 3:4] / 255.0
+            rgb = rgb * alpha + (1.0 - alpha)
+        return np.clip(uvs, 0.0, 1.0).astype(np.float32), np.clip(rgb, 0.0, 1.0).astype(np.float32)
 
     @classmethod
     def create_demo_sphere(
@@ -152,22 +185,28 @@ class MeshAsset:
         colors = np.clip(base[None, :] * tint, 0.0, 1.0)
         return cls(vertices=vertices, faces=faces, vertex_colors=colors, name="demo_cube")
 
-    def normalize_to_unit_sphere(self) -> None:
+    def normalize_to_unit_sphere(self) -> tuple[np.ndarray, float]:
         center = (self.vertices.min(axis=0) + self.vertices.max(axis=0)) * 0.5
         self.vertices = self.vertices - center[None, :]
         radius = np.linalg.norm(self.vertices, axis=1).max()
         if radius > 0.0:
             self.vertices = self.vertices / radius
+        self.center = center.astype(np.float32)
+        self.radius = float(radius)
+        return self.center, self.radius
 
     def sample_surface(self, n: int, seed: int = 0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         rng = np.random.default_rng(seed)
         triangles = self.vertices[self.faces]
         face_colors = self.vertex_colors[self.faces].mean(axis=1)
+        face_uvs = None if self.uvs is None or self.texture_image is None else self.uvs[self.faces]
         face_normals = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
         areas = np.linalg.norm(face_normals, axis=1) * 0.5
         valid = areas > 1.0e-12
         triangles = triangles[valid]
         face_colors = face_colors[valid]
+        if face_uvs is not None:
+            face_uvs = face_uvs[valid]
         face_normals = face_normals[valid]
         areas = areas[valid]
         normals = face_normals / np.maximum(np.linalg.norm(face_normals, axis=1, keepdims=True), 1.0e-8)
@@ -181,8 +220,30 @@ class MeshAsset:
         r2 = rng.random(n, dtype=np.float32)
         weights = np.stack([1.0 - r1, r1 * (1.0 - r2), r1 * r2], axis=1)
         points = (chosen * weights[:, :, None]).sum(axis=1)
+        colors = face_colors[face_indices].astype(np.float32)
+        if face_uvs is not None and self.texture_image is not None:
+            sampled_uvs = (face_uvs[face_indices] * weights[:, :, None]).sum(axis=1)
+            colors = self.sample_texture(sampled_uvs)
         return (
             points.astype(np.float32),
             normals[face_indices].astype(np.float32),
-            face_colors[face_indices].astype(np.float32),
+            colors.astype(np.float32),
         )
+
+    def sample_texture(self, uvs: np.ndarray) -> np.ndarray:
+        if self.texture_image is None:
+            raise ValueError("Mesh does not have a base-color texture.")
+        texture = self.texture_image
+        height, width = texture.shape[:2]
+        wrapped = np.clip(np.asarray(uvs, dtype=np.float32), 0.0, 1.0)
+        x = np.clip(wrapped[:, 0] * (width - 1), 0, width - 1)
+        y = np.clip((1.0 - wrapped[:, 1]) * (height - 1), 0, height - 1)
+        x0 = np.floor(x).astype(np.int64)
+        y0 = np.floor(y).astype(np.int64)
+        x1 = np.minimum(x0 + 1, width - 1)
+        y1 = np.minimum(y0 + 1, height - 1)
+        tx = (x - x0)[:, None]
+        ty = (y - y0)[:, None]
+        top = texture[y0, x0] * (1.0 - tx) + texture[y0, x1] * tx
+        bottom = texture[y1, x0] * (1.0 - tx) + texture[y1, x1] * tx
+        return np.clip(top * (1.0 - ty) + bottom * ty, 0.0, 1.0).astype(np.float32)

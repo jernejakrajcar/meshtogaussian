@@ -20,12 +20,14 @@ def load_trained_gaussian_ply(path: str | Path, device: torch.device | str = "cp
     color = _extract_color(data)
     opacity = _extract_opacity(data)
     scale = _extract_scale(data)
+    rotation = _extract_rotation(data)
 
     return GaussianCloud(
         xyz=torch.as_tensor(xyz, dtype=torch.float32, device=device),
         scale=torch.as_tensor(scale, dtype=torch.float32, device=device),
         color=torch.as_tensor(color, dtype=torch.float32, device=device),
         opacity=torch.as_tensor(opacity, dtype=torch.float32, device=device),
+        rotation=None if rotation is None else torch.as_tensor(rotation, dtype=torch.float32, device=device),
         name=Path(path).stem,
     )
 
@@ -38,7 +40,11 @@ def build_trained_lods(
     xyz = cloud.xyz.detach().cpu().numpy()
     opacity = cloud.opacity.detach().cpu().numpy().reshape(-1)
     scale = cloud.scale.detach().cpu().numpy().reshape(-1)
+    scale_for_order = cloud.scale.detach().cpu().numpy()
+    if scale_for_order.ndim == 2:
+        scale = scale_for_order.max(axis=1)
     color = cloud.color.detach().cpu().numpy()
+    rotation = None if cloud.rotation is None else cloud.rotation.detach().cpu().numpy()
     if cloud.count <= 0:
         raise ValueError("Cannot build LODs from an empty Gaussian cloud.")
     max_count = min(max(counts), cloud.count)
@@ -49,9 +55,10 @@ def build_trained_lods(
         indices = order[:actual_count]
         lods[str(count)] = GaussianCloud(
             xyz=torch.as_tensor(xyz[indices], dtype=torch.float32, device=device),
-            scale=torch.as_tensor(scale[indices, None], dtype=torch.float32, device=device),
+            scale=torch.as_tensor(scale_for_order[indices], dtype=torch.float32, device=device),
             color=torch.as_tensor(color[indices], dtype=torch.float32, device=device),
             opacity=torch.as_tensor(opacity[indices, None], dtype=torch.float32, device=device),
+            rotation=None if rotation is None else torch.as_tensor(rotation[indices], dtype=torch.float32, device=device),
             name=str(count),
         )
     return lods
@@ -158,12 +165,22 @@ def _extract_scale(data: dict[str, np.ndarray]) -> np.ndarray:
     if keys:
         raw = np.stack([data[key] for key in keys], axis=1)
         scale_values = np.exp(raw) if float(np.nanmedian(raw)) < 0.0 else raw
-        scale = scale_values.mean(axis=1)
+        scale = scale_values
     elif "scale" in data:
-        scale = data["scale"]
+        scale = data["scale"][:, None]
     else:
-        scale = np.full(len(data["x"]), 0.015, dtype=np.float32)
-    return np.clip(scale[:, None], 0.001, 0.35).astype(np.float32)
+        scale = np.full((len(data["x"]), 1), 0.015, dtype=np.float32)
+    return np.clip(scale, 0.001, 0.35).astype(np.float32)
+
+
+def _extract_rotation(data: dict[str, np.ndarray]) -> np.ndarray | None:
+    keys = [key for key in ["rot_0", "rot_1", "rot_2", "rot_3"] if key in data]
+    if len(keys) != 4:
+        return None
+    rotation = np.stack([data[key] for key in keys], axis=1).astype(np.float32)
+    norm = np.linalg.norm(rotation, axis=1, keepdims=True)
+    norm = np.maximum(norm, 1.0e-8)
+    return rotation / norm
 
 
 def _importance_spatial_order(
@@ -173,18 +190,7 @@ def _importance_spatial_order(
     count: int,
 ) -> np.ndarray:
     importance = np.clip(opacity, 0.0, 1.0) * np.maximum(scale, 1.0e-6)
-    first = int(np.argmax(importance))
-    order = np.empty(count, dtype=np.int64)
-    order[0] = first
-    min_dist2 = np.sum((xyz - xyz[first]) ** 2, axis=1)
-    selected = np.zeros(len(xyz), dtype=bool)
-    selected[first] = True
-    for i in range(1, count):
-        score = importance * np.sqrt(np.maximum(min_dist2, 1.0e-12))
-        score[selected] = -np.inf
-        next_index = int(np.argmax(score))
-        order[i] = next_index
-        selected[next_index] = True
-        dist2 = np.sum((xyz - xyz[next_index]) ** 2, axis=1)
-        min_dist2 = np.minimum(min_dist2, dist2)
-    return order
+    if len(importance) <= count:
+        return np.argsort(-importance).astype(np.int64)
+    candidates = np.argpartition(-importance, count - 1)[:count]
+    return candidates[np.argsort(-importance[candidates])].astype(np.int64)

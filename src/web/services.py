@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
+import math
 import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import numpy as np
+import torch
 
 from src.core.progress import StageLogger
 from src.gaussian.lod import GaussianLODBuilder
@@ -28,6 +32,55 @@ def safe_upload_name(filename: str) -> str:
     if not is_supported_mesh(raw):
         raise ValueError(f"Unsupported mesh extension for {filename!r}.")
     return raw
+
+
+def _best_axis_permutation(
+    cloud_xyz: np.ndarray,
+    mesh_vertices: np.ndarray,
+    cloud_center: np.ndarray,
+    mesh_center: np.ndarray,
+    scale_factor: np.float32,
+    sample_count: int = 2500,
+) -> np.ndarray:
+    cloud_sample = _even_sample(cloud_xyz, sample_count)
+    mesh_sample = _even_sample(mesh_vertices, sample_count)
+    best_rotation = np.eye(3, dtype=np.float32)
+    best_score = float("inf")
+    for permutation in itertools.permutations(range(3)):
+        base = np.zeros((3, 3), dtype=np.float32)
+        for row, column in enumerate(permutation):
+            base[row, column] = 1.0
+        for signs in itertools.product((-1.0, 1.0), repeat=3):
+            rotation = (np.asarray(signs, dtype=np.float32)[:, None] * base).astype(np.float32)
+            transformed_cloud = ((cloud_sample - cloud_center[None, :]) @ rotation.T) * scale_factor + mesh_center[None, :]
+            score = _mean_nearest_distance(transformed_cloud, mesh_sample)
+            if score < best_score:
+                best_score = score
+                best_rotation = rotation
+    return best_rotation
+
+
+def _even_sample(points: np.ndarray, sample_count: int) -> np.ndarray:
+    if len(points) <= sample_count:
+        return points.astype(np.float32, copy=False)
+    indices = np.linspace(0, len(points) - 1, sample_count, dtype=np.int64)
+    return points[indices].astype(np.float32, copy=False)
+
+
+def _mean_nearest_distance(points: np.ndarray, targets: np.ndarray) -> float:
+    try:
+        from scipy.spatial import cKDTree
+
+        distances, _ = cKDTree(targets).query(points, k=1)
+        return float(np.mean(distances))
+    except Exception:
+        total = 0.0
+        batch_size = 512
+        for start in range(0, len(points), batch_size):
+            chunk = points[start : start + batch_size]
+            dist2 = np.sum((chunk[:, None, :] - targets[None, :, :]) ** 2, axis=2)
+            total += float(np.sqrt(np.min(dist2, axis=1)).sum())
+        return total / max(len(points), 1)
 
 
 @dataclass
@@ -85,7 +138,7 @@ class ModelStore:
         self.ensure_dirs()
         models = []
         seen: set[Path] = set()
-        for directory in [*self.trained_dirs, *self.mesh2splat_lod_dirs]:
+        for directory in self.trained_dirs:
             if not directory.exists():
                 continue
             for path in sorted(directory.rglob("*.ply")):
@@ -149,7 +202,7 @@ class ModelStore:
                 source = str(mesh_path)
 
             mesh = MeshAsset.load(mesh_path, fallback_color=fallback_color)
-            mesh.normalize_to_unit_sphere()
+            mesh_center, mesh_radius = mesh.normalize_to_unit_sphere()
             gaussian_source = None
             if representation == "trained":
                 trained_path = self.id_to_trained_path(trained_ply_id) if trained_ply_id else self.find_trained_for_mesh(mesh.name)
@@ -157,8 +210,9 @@ class ModelStore:
                     raise FileNotFoundError(
                         "No trained Gaussian .ply was provided or found. Generate one with train_gaussians_from_mesh.py first."
                     )
-                trained_cloud = load_trained_gaussian_ply(trained_path)
-                lods = build_trained_lods(trained_cloud, lod_counts)
+                trained_cloud = self._align_gaussian_to_normalized_mesh(load_trained_gaussian_ply(trained_path), mesh.vertices)
+                trained_counts = sorted({count for count in lod_counts if count < trained_cloud.count} | {trained_cloud.count})
+                lods = build_trained_lods(trained_cloud, trained_counts)
                 gaussian_source = str(trained_path)
             elif representation == "mesh2splat_lods":
                 lod_paths = self.find_mesh2splat_lod_set(mesh.name)
@@ -167,7 +221,7 @@ class ModelStore:
                         f"No Mesh2Splat LOD .ply set was found for mesh {mesh.name!r} under data/mesh2splats."
                     )
                 lods = {
-                    str(count): load_trained_gaussian_ply(path)
+                    str(count): self._normalize_gaussian_to_mesh(load_trained_gaussian_ply(path), mesh_center, mesh_radius)
                     for count, path in sorted(lod_paths.items())
                 }
                 gaussian_source = "; ".join(str(path) for _, path in sorted(lod_paths.items()))
@@ -193,6 +247,9 @@ class ModelStore:
 
     def serialize_model(self, prepared: PreparedModel) -> dict[str, Any]:
         mesh = prepared.mesh
+        source_path = None if prepared.source == "generated" else Path(prepared.source)
+        center = mesh.center if mesh.center is not None else np.zeros(3, dtype=np.float32)
+        radius = mesh.radius if math.isfinite(mesh.radius) and mesh.radius > 0 else 1.0
         return {
             "id": prepared.model_id,
             "name": mesh.name,
@@ -203,6 +260,10 @@ class ModelStore:
                 "vertices": mesh.vertices.astype(float).tolist(),
                 "faces": mesh.faces.astype(int).tolist(),
                 "colors": mesh.vertex_colors.astype(float).tolist(),
+                "center": center.astype(float).tolist(),
+                "radius": float(radius),
+                "source_url": f"/api/model/{prepared.model_id}/source/{quote(source_path.name)}" if source_path else None,
+                "source_extension": source_path.suffix.lower() if source_path else None,
             },
             "lods": [
                 {
@@ -223,9 +284,14 @@ class ModelStore:
             "model_id": prepared.model_id,
             "count": lod.count,
             "xyz": lod.xyz.detach().cpu().numpy().astype(float).tolist(),
-            "scale": lod.scale.detach().cpu().numpy().astype(float).reshape(-1).tolist(),
+            "scale": lod.scale.detach().cpu().numpy().astype(float).tolist(),
             "color": lod.color.detach().cpu().numpy().astype(float).tolist(),
             "opacity": lod.opacity.detach().cpu().numpy().astype(float).reshape(-1).tolist(),
+            "rotation": (
+                None
+                if lod.rotation is None
+                else lod.rotation.detach().cpu().numpy().astype(float).tolist()
+            ),
         }
 
     @staticmethod
@@ -233,6 +299,53 @@ class ModelStore:
         normalized = str(Path(path).resolve())
         digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:12]
         return f"file:{digest}"
+
+    @staticmethod
+    def _normalize_gaussian_to_mesh(cloud: GaussianCloud, center: np.ndarray, radius: float) -> GaussianCloud:
+        if radius <= 0.0:
+            return cloud
+        device = cloud.xyz.device
+        center_tensor = torch.as_tensor(center, dtype=cloud.xyz.dtype, device=device)
+        return GaussianCloud(
+            xyz=(cloud.xyz - center_tensor[None, :]) / radius,
+            scale=cloud.scale / radius,
+            color=cloud.color,
+            opacity=cloud.opacity,
+            rotation=cloud.rotation,
+            name=cloud.name,
+        )
+
+    @staticmethod
+    def _align_gaussian_to_normalized_mesh(cloud: GaussianCloud, mesh_vertices: np.ndarray) -> GaussianCloud:
+        if cloud.count <= 0 or len(mesh_vertices) == 0:
+            return cloud
+        device = cloud.xyz.device
+        mesh_np = np.asarray(mesh_vertices, dtype=np.float32)
+        cloud_np = cloud.xyz.detach().cpu().numpy().astype(np.float32)
+
+        mesh_min = mesh_np.min(axis=0)
+        mesh_max = mesh_np.max(axis=0)
+        cloud_min = cloud_np.min(axis=0)
+        cloud_max = cloud_np.max(axis=0)
+        mesh_center_np = (mesh_min + mesh_max) * 0.5
+        cloud_center_np = (cloud_min + cloud_max) * 0.5
+        mesh_extent = max(float(np.max(mesh_max - mesh_min)), 1.0e-6)
+        cloud_extent = max(float(np.max(cloud_max - cloud_min)), 1.0e-6)
+        scale_factor_np = np.clip(mesh_extent / cloud_extent, 0.01, 100.0).astype(np.float32)
+        rotation_np = _best_axis_permutation(cloud_np, mesh_np, cloud_center_np, mesh_center_np, scale_factor_np)
+
+        rotation = torch.as_tensor(rotation_np, dtype=cloud.xyz.dtype, device=device)
+        mesh_center = torch.as_tensor(mesh_center_np, dtype=cloud.xyz.dtype, device=device)
+        cloud_center = torch.as_tensor(cloud_center_np, dtype=cloud.xyz.dtype, device=device)
+        scale_factor = torch.as_tensor(float(scale_factor_np), dtype=cloud.xyz.dtype, device=device)
+        return GaussianCloud(
+            xyz=((cloud.xyz - cloud_center[None, :]) @ rotation.T) * scale_factor + mesh_center[None, :],
+            scale=cloud.scale * scale_factor,
+            color=cloud.color,
+            opacity=cloud.opacity,
+            rotation=cloud.rotation,
+            name=cloud.name,
+        )
 
     def id_to_path(self, model_id: str) -> Path:
         for model in self.list_models():

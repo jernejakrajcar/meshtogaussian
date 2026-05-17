@@ -18,6 +18,8 @@ class SyntheticViewRenderer:
         return [self.render(mesh, camera, outputs=outputs) for camera in cameras]
 
     def render(self, mesh: MeshAsset, camera: Camera, outputs: list[str] | None = None) -> dict[str, np.ndarray]:
+        if self.backend not in {"software", "auto"}:
+            raise ValueError(f"Unsupported mesh backend for this prototype: {self.backend}")
         outputs = outputs or ["rgb", "depth"]
         rgb, depth = self._software_render(mesh, camera)
         result: dict[str, np.ndarray] = {}
@@ -53,8 +55,9 @@ class SyntheticViewRenderer:
             normal = np.cross(world_tri[1] - world_tri[0], world_tri[2] - world_tri[0])
             normal /= max(float(np.linalg.norm(normal)), 1.0e-8)
             shade = 0.35 + 0.65 * max(0.0, float(np.dot(normal, light_dir)))
-            color = np.clip(mesh.vertex_colors[face].mean(axis=0) * shade, 0.0, 1.0)
-            self._rasterize_triangle(rgb, depth, pts, z, color)
+            vertex_colors = mesh.vertex_colors[face]
+            face_uvs = None if mesh.uvs is None or mesh.texture_image is None else mesh.uvs[face]
+            self._rasterize_triangle(rgb, depth, pts, z, vertex_colors, shade, face_uvs, mesh.texture_image)
 
         depth[~np.isfinite(depth)] = 0.0
         return rgb, depth
@@ -81,7 +84,10 @@ class SyntheticViewRenderer:
         depth: np.ndarray,
         pts: np.ndarray,
         z_values: np.ndarray,
-        color: np.ndarray,
+        vertex_colors: np.ndarray,
+        shade: float,
+        uvs: np.ndarray | None = None,
+        texture: np.ndarray | None = None,
     ) -> None:
         height, width = depth.shape
         min_x = max(0, int(np.floor(np.min(pts[:, 0]))))
@@ -108,4 +114,36 @@ class SyntheticViewRenderer:
                 positive_depth = -z
                 if positive_depth < depth[py, px]:
                     depth[py, px] = positive_depth
-                    rgb[py, px] = color
+                    weights = np.asarray([w0, w1, w2], dtype=np.float32)
+                    rgb[py, px] = SyntheticViewRenderer._surface_color(vertex_colors, weights, shade, uvs, texture)
+
+    @staticmethod
+    def _surface_color(
+        vertex_colors: np.ndarray,
+        weights: np.ndarray,
+        shade: float,
+        uvs: np.ndarray | None,
+        texture: np.ndarray | None,
+    ) -> np.ndarray:
+        if uvs is not None and texture is not None:
+            uv = (uvs * weights[:, None]).sum(axis=0)
+            color = SyntheticViewRenderer._sample_texture(texture, uv)
+        else:
+            color = (vertex_colors * weights[:, None]).sum(axis=0)
+        return np.clip(color * shade, 0.0, 1.0).astype(np.float32)
+
+    @staticmethod
+    def _sample_texture(texture: np.ndarray, uv: np.ndarray) -> np.ndarray:
+        height, width = texture.shape[:2]
+        wrapped = np.clip(np.asarray(uv, dtype=np.float32), 0.0, 1.0)
+        x = float(np.clip(wrapped[0] * (width - 1), 0, width - 1))
+        y = float(np.clip((1.0 - wrapped[1]) * (height - 1), 0, height - 1))
+        x0 = int(np.floor(x))
+        y0 = int(np.floor(y))
+        x1 = min(x0 + 1, width - 1)
+        y1 = min(y0 + 1, height - 1)
+        tx = x - x0
+        ty = y - y0
+        top = texture[y0, x0] * (1.0 - tx) + texture[y0, x1] * tx
+        bottom = texture[y1, x0] * (1.0 - tx) + texture[y1, x1] * tx
+        return np.clip(top * (1.0 - ty) + bottom * ty, 0.0, 1.0).astype(np.float32)

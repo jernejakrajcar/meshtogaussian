@@ -8,6 +8,7 @@ import imageio.v2 as imageio
 import numpy as np
 
 from src.core.config import ensure_dir
+from src.core.progress import StageLogger
 from src.geometry.cameras import Camera
 from src.geometry.mesh_loader import MeshAsset
 from src.render.mesh_renderer import SyntheticViewRenderer
@@ -63,13 +64,15 @@ def export_synthetic_colmap_dataset(
     output_root: str | Path,
     point_count: int = 20000,
     seed: int = 7,
+    logger: StageLogger | None = None,
 ) -> SyntheticDatasetManifest:
     root = ensure_dir(output_root)
     images_dir = ensure_dir(root / "images")
     sparse_dir = ensure_dir(root / "sparse" / "0")
+    progress = logger or StageLogger(enabled=False)
 
     frames = []
-    for index, camera in enumerate(cameras, start=1):
+    for index, camera in progress.iter(enumerate(cameras, start=1), "synthetic training views", total=len(cameras)):
         image_name = f"{index:04d}.png"
         rgb = renderer.render(mesh, camera, outputs=["rgb"])["rgb"]
         imageio.imwrite(images_dir / image_name, (rgb * 255.0).astype(np.uint8))
@@ -93,9 +96,11 @@ def export_synthetic_colmap_dataset(
             }
         )
 
-    points, _, colors = mesh.sample_surface(point_count, seed=seed)
-    _write_colmap_text(sparse_dir, frames, points, colors)
-    _write_seed_points_ply(root / "initial_points.ply", points, colors)
+    with progress.stage(f"seed point sampling ({point_count:,} points)"):
+        points, _, colors = mesh.sample_surface(point_count, seed=seed)
+    with progress.stage("COLMAP text export"):
+        _write_colmap_text(sparse_dir, frames, points, colors)
+        _write_seed_points_ply(root / "initial_points.ply", points, colors)
 
     manifest = {
         "format": "synthetic_colmap_text",
@@ -133,8 +138,9 @@ def _write_colmap_text(
         name = Path(frame["file_path"]).name
         image_lines.append(
             f"{frame['image_id']} {q[0]:.10f} {q[1]:.10f} {q[2]:.10f} {q[3]:.10f} "
-            f"{t[0]:.10f} {t[1]:.10f} {t[2]:.10f} 1 {name}\n\n"
+            f"{t[0]:.10f} {t[1]:.10f} {t[2]:.10f} 1 {name}\n"
         )
+        image_lines.append(f"{first['width'] * 0.5:.3f} {first['height'] * 0.5:.3f} 1\n")
     (sparse_dir / "images.txt").write_text("".join(image_lines), encoding="utf-8")
 
     point_lines = ["# POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[]\n"]
@@ -142,7 +148,7 @@ def _write_colmap_text(
     for idx, (point, color) in enumerate(zip(points, rgb), start=1):
         point_lines.append(
             f"{idx} {point[0]:.8f} {point[1]:.8f} {point[2]:.8f} "
-            f"{color[0]} {color[1]} {color[2]} 0.0\n"
+            f"{color[0]} {color[1]} {color[2]} 0.0 1 0\n"
         )
     (sparse_dir / "points3D.txt").write_text("".join(point_lines), encoding="utf-8")
 

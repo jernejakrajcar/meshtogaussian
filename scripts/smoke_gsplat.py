@@ -41,7 +41,7 @@ def main() -> None:
         intrinsics,
         width,
         height,
-        backgrounds=torch.tensor([[0.02, 0.025, 0.03]], device=device),
+        backgrounds=torch.tensor([0.02, 0.025, 0.03], device=device),
     )
 
     image = rendered[0].detach().clamp(0.0, 1.0).cpu().numpy()

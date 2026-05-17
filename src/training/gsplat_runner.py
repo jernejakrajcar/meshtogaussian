@@ -8,8 +8,41 @@ from pathlib import Path
 from typing import Any
 
 
-def check_cuda_training_environment(gsplat_repo: str | Path | None = None) -> dict[str, Any]:
+def check_cuda_training_environment(
+    gsplat_repo: str | Path | None = None,
+    python_executable: str | Path | None = None,
+) -> dict[str, Any]:
     status: dict[str, Any] = {"cuda_available": False, "gsplat_repo_ok": None, "problems": []}
+    if python_executable is not None:
+        py = Path(python_executable)
+        status["python_executable"] = str(py)
+        if not py.exists():
+            status["problems"].append(f"Python executable was not found: {py}")
+            return status
+        probe = (
+            "import json, torch; "
+            "print(json.dumps({"
+            "'torch_version': torch.__version__, "
+            "'python': __import__('sys').executable, "
+            "'cuda_available': bool(torch.cuda.is_available()), "
+            "'cuda_device_count': int(torch.cuda.device_count()), "
+            "'cuda_version': torch.version.cuda, "
+            "'devices': [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())] "
+            "}))"
+        )
+        completed = subprocess.run([str(py), "-c", probe], capture_output=True, text=True, check=False)
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout).strip()
+            status["problems"].append(f"CUDA Python probe failed: {detail}")
+        else:
+            probed = json.loads(completed.stdout)
+            status.update(probed)
+            status["python_executable"] = probed.get("python", status["python_executable"])
+            if not status["cuda_available"]:
+                status["problems"].append("torch.cuda.is_available() is False. Install a CUDA-enabled PyTorch build.")
+        _check_gsplat_repo(status, gsplat_repo)
+        return status
+
     try:
         import torch
     except Exception as exc:
@@ -25,6 +58,11 @@ def check_cuda_training_environment(gsplat_repo: str | Path | None = None) -> di
     else:
         status["problems"].append("torch.cuda.is_available() is False. Install a CUDA-enabled PyTorch build.")
 
+    _check_gsplat_repo(status, gsplat_repo)
+    return status
+
+
+def _check_gsplat_repo(status: dict[str, Any], gsplat_repo: str | Path | None) -> None:
     if gsplat_repo is not None:
         repo = Path(gsplat_repo)
         trainer = repo / "examples" / "simple_trainer.py"
@@ -32,7 +70,6 @@ def check_cuda_training_environment(gsplat_repo: str | Path | None = None) -> di
         status["gsplat_repo_ok"] = bool(trainer.exists())
         if not trainer.exists():
             status["problems"].append(f"Missing gsplat trainer script: {trainer}")
-    return status
 
 
 @dataclass(frozen=True)
@@ -57,22 +94,24 @@ def build_gsplat_command(
     repo = Path(gsplat_repo)
     script = repo / "examples" / "simple_trainer.py"
     py = python_executable or sys.executable
+    data_path = Path(data_dir).resolve()
+    result_path = Path(result_dir).resolve()
     argv = [
         py,
         str(script),
         "default",
         "--data_dir",
-        str(Path(data_dir)),
+        str(data_path),
         "--data_factor",
         str(data_factor),
         "--result_dir",
-        str(Path(result_dir)),
+        str(result_path),
         "--max_steps",
         str(steps),
     ]
     if extra_args:
         argv.extend(str(arg) for arg in extra_args)
-    return GsplatCommand(argv=argv, cwd=repo, result_dir=Path(result_dir))
+    return GsplatCommand(argv=argv, cwd=repo, result_dir=result_path)
 
 
 def run_gsplat_training(command: GsplatCommand, execute: bool = False) -> dict:
