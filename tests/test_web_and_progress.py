@@ -306,6 +306,9 @@ def test_frontend_debug_ui_sections_and_hints() -> None:
     assert "Only used for Single trained PLY." in html
     assert "Only for Transition mode; depth-sorts splats for current camera." in html
     assert "For Gaussian/Both view with trained splats." in html
+    assert 'id="gaussianYOffset"' in html
+    assert 'id="gaussianScale"' in html
+    assert "splat-render-3-raw-webgl" in main
     assert 'id="refreshModelsButton"' in html
     assert 'id="lockCameraButton"' in html
     assert "body {" in css
@@ -313,6 +316,50 @@ def test_frontend_debug_ui_sections_and_hints() -> None:
     assert ".log-panel" in css
     assert "overscroll-behavior: contain;" in css
     assert "statusBox.scrollTop = statusBox.scrollHeight" in main
+    assert "DEFAULT_TRAINED_LOD_COUNTS" in main
+    assert "function applyGaussianTransform(object)" in main
+    assert "createRawGaussianRenderer" in main
+    assert "new THREE.ShaderMaterial" not in main
+    assert "raw_gaussian_renderer.js" in main
+    raw_renderer = (root / "web" / "raw_gaussian_renderer.js").read_text(encoding="utf-8")
+    assert "drawElementsInstanced" in raw_renderer
+    assert "gl.POINTS" not in raw_renderer
+    assert "AUTO_SORT_THRESHOLD" in main
+
+
+def test_trained_gaussian_dropdown_names_include_parent_folder(tmp_path: Path) -> None:
+    from src.core.progress import StageLogger
+    from src.web.services import ModelStore
+
+    trained = tmp_path / "trained_gaussians"
+    (trained / "plant").mkdir(parents=True)
+    (trained / "sourdough").mkdir(parents=True)
+    for folder in ["plant", "sourdough"]:
+        (trained / folder / "point-cloud-29999.ply").write_text(
+            "\n".join(
+                [
+                    "ply",
+                    "format ascii 1.0",
+                    "element vertex 1",
+                    "property float x",
+                    "property float y",
+                    "property float z",
+                    "end_header",
+                    "0 0 0",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    store = ModelStore(
+        source_dirs=[tmp_path / "meshes"],
+        upload_dir=tmp_path / "uploads",
+        trained_dirs=[trained],
+        logger=StageLogger(False, False),
+    )
+    names = [model["name"] for model in store.list_trained_gaussians()]
+    assert "plant / point-cloud-29999.ply" in names
+    assert "sourdough / point-cloud-29999.ply" in names
 
 
 def test_frontend_control_state_rules_are_centralized() -> None:
@@ -334,3 +381,4 @@ def test_frontend_control_state_rules_are_centralized() -> None:
     assert 'prepared.representation === "trained"' in main
     assert "lodSelect.selectedIndex = lodSelect.options.length - 1" in main
     assert "function lockTransitionView()" in main
+    assert 'lod_counts: representationSelect.value === "trained" ? DEFAULT_TRAINED_LOD_COUNTS : undefined' in main

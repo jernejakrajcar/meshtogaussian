@@ -35,6 +35,7 @@ lod:
 transition:
   mesh_fade_start: 2.8
   mesh_fade_end: 1.8
+  lod_mode: progressive
   lod_ranges:
     "10": [3.0, 2.3]
     "25": [2.5, 1.8]

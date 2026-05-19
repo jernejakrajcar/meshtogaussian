@@ -31,6 +31,8 @@ class MeshAsset:
         try:
             import trimesh  # type: ignore
         except Exception as exc:
+            if Path(path).suffix.lower() == ".obj":
+                return cls._load_simple_obj(Path(path), fallback_color=fallback_color)
             raise RuntimeError(
                 "Loading external meshes requires trimesh. Install requirements.txt "
                 "or use mesh.path: null for the procedural demo mesh."
@@ -52,6 +54,29 @@ class MeshAsset:
             texture_image=texture_image,
             name=Path(path).stem,
         )
+
+    @classmethod
+    def _load_simple_obj(cls, path: Path, fallback_color: list[float] | None = None) -> "MeshAsset":
+        vertices: list[list[float]] = []
+        faces: list[list[int]] = []
+        for raw_line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if parts[0] == "v" and len(parts) >= 4:
+                vertices.append([float(parts[1]), float(parts[2]), float(parts[3])])
+            elif parts[0] == "f" and len(parts) >= 4:
+                polygon = [int(token.split("/")[0]) - 1 for token in parts[1:]]
+                for index in range(1, len(polygon) - 1):
+                    faces.append([polygon[0], polygon[index], polygon[index + 1]])
+        if not vertices or not faces:
+            raise ValueError(f"OBJ fallback loader could not read vertices/faces from {path}.")
+        vertex_array = np.asarray(vertices, dtype=np.float32)
+        face_array = np.asarray(faces, dtype=np.int64)
+        color = np.asarray(fallback_color or [0.78, 0.64, 0.42], dtype=np.float32)
+        colors = np.tile(color[None, :], (len(vertex_array), 1)).astype(np.float32)
+        return cls(vertices=vertex_array, faces=face_array, vertex_colors=colors, name=path.stem)
 
     @classmethod
     def create_demo_shape(cls, shape: str, color: list[float] | None = None) -> "MeshAsset":

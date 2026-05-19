@@ -133,6 +133,27 @@ def test_trained_gaussian_ascii_ply_loader_and_lods(tmp_path: Path) -> None:
     assert capped["10"].count == 4
 
 
+def test_trained_lods_are_deterministic_and_nested() -> None:
+    rng = np.random.default_rng(42)
+    xyz = rng.normal(size=(200, 3)).astype(np.float32)
+    scale = rng.uniform(0.01, 0.08, size=(200, 3)).astype(np.float32)
+    opacity = rng.uniform(0.05, 0.95, size=(200, 1)).astype(np.float32)
+    cloud = GaussianCloud(
+        xyz=torch.as_tensor(xyz),
+        scale=torch.as_tensor(scale),
+        color=torch.ones((200, 3)),
+        opacity=torch.as_tensor(opacity),
+        name="trained",
+    )
+
+    first = build_trained_lods(cloud, [10, 50, 100])
+    second = build_trained_lods(cloud, [10, 50, 100])
+
+    assert torch.allclose(first["100"].xyz, second["100"].xyz)
+    assert torch.allclose(first["50"].xyz, first["100"].xyz[:50])
+    assert torch.allclose(first["10"].xyz, first["50"].xyz[:10])
+
+
 def test_trained_gaussian_binary_ply_loader(tmp_path: Path) -> None:
     ply = tmp_path / "trained_binary.ply"
     header = "\n".join(

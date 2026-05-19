@@ -48,6 +48,8 @@ def build_trained_lods(
     if cloud.count <= 0:
         raise ValueError("Cannot build LODs from an empty Gaussian cloud.")
     max_count = min(max(counts), cloud.count)
+    # One deterministic order is shared by all LODs, so each denser level is a
+    # true superset of the previous one. This is the main anti-popping property.
     order = _importance_spatial_order(xyz, opacity, scale, max_count)
     lods: dict[str, GaussianCloud] = {}
     for count in sorted(counts):
@@ -189,8 +191,62 @@ def _importance_spatial_order(
     scale: np.ndarray,
     count: int,
 ) -> np.ndarray:
+    total = len(xyz)
+    target_count = min(max(int(count), 0), total)
+    if target_count == 0:
+        return np.asarray([], dtype=np.int64)
+
     importance = np.clip(opacity, 0.0, 1.0) * np.maximum(scale, 1.0e-6)
-    if len(importance) <= count:
-        return np.argsort(-importance).astype(np.int64)
-    candidates = np.argpartition(-importance, count - 1)[:count]
-    return candidates[np.argsort(-importance[candidates])].astype(np.int64)
+    importance = np.nan_to_num(importance, nan=0.0, posinf=0.0, neginf=0.0)
+    if total <= target_count:
+        return np.argsort(-importance, kind="mergesort").astype(np.int64)
+
+    candidate_count = min(total, max(target_count * 4, target_count + 128))
+    candidate_indices = np.argsort(-importance, kind="mergesort")[:candidate_count]
+    candidate_xyz = xyz[candidate_indices]
+    candidate_importance = importance[candidate_indices]
+
+    minimum = candidate_xyz.min(axis=0)
+    extent = np.maximum(candidate_xyz.max(axis=0) - minimum, 1.0e-6)
+    grid_size = int(np.clip(round(target_count ** (1.0 / 3.0) * 3.0), 4, 32))
+    normalized = np.clip((candidate_xyz - minimum[None, :]) / extent[None, :], 0.0, 0.999999)
+    voxel = np.floor(normalized * grid_size).astype(np.int32)
+    bucket_ids = voxel[:, 0] + grid_size * voxel[:, 1] + grid_size * grid_size * voxel[:, 2]
+
+    buckets: dict[int, list[int]] = {}
+    bucket_scores: dict[int, float] = {}
+    for local_index, bucket_id in enumerate(bucket_ids.tolist()):
+        buckets.setdefault(bucket_id, []).append(int(candidate_indices[local_index]))
+        bucket_scores[bucket_id] = max(bucket_scores.get(bucket_id, 0.0), float(candidate_importance[local_index]))
+
+    active_buckets = sorted(buckets, key=lambda bucket_id: (-bucket_scores[bucket_id], bucket_id))
+    cursors = {bucket_id: 0 for bucket_id in active_buckets}
+    order: list[int] = []
+    selected: set[int] = set()
+
+    while len(order) < target_count and active_buckets:
+        next_active = []
+        for bucket_id in active_buckets:
+            cursor = cursors[bucket_id]
+            bucket = buckets[bucket_id]
+            if cursor >= len(bucket):
+                continue
+            index = bucket[cursor]
+            cursors[bucket_id] = cursor + 1
+            if index not in selected:
+                order.append(index)
+                selected.add(index)
+                if len(order) >= target_count:
+                    break
+            if cursors[bucket_id] < len(bucket):
+                next_active.append(bucket_id)
+        active_buckets = next_active
+
+    if len(order) < target_count:
+        for index in np.argsort(-importance, kind="mergesort"):
+            int_index = int(index)
+            if int_index not in selected:
+                order.append(int_index)
+                if len(order) >= target_count:
+                    break
+    return np.asarray(order, dtype=np.int64)

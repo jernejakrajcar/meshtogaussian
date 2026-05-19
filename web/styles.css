@@ -163,6 +163,27 @@ pre {
   overflow: hidden;
 }
 
+#viewer canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+#viewer canvas[hidden] {
+  display: none;
+}
+
+#viewer > canvas:first-of-type {
+  z-index: 1;
+}
+
+#gaussianLayer {
+  z-index: 2;
+  pointer-events: none;
+}
+
 .log-panel {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);

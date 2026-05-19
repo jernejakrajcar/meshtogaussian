@@ -227,6 +227,10 @@ and `Initialized preview` for the old mesh-sampled baseline.
 The default `Pipeline transition` mode includes a slider that moves the camera from far 
 to near and updates mesh/Gaussian LOD weights with the same transition model as the offline pipeline.
 
+## LOD Strategy
+
+The recommended seminar path is one trained Gaussian PLY per mesh, then deterministic nested LOD extraction in the viewer. The trained LOD builder ranks splats by opacity/scale importance while distributing selections spatially, so denser LODs are supersets of coarser LODs. This avoids random popping and avoids the cost/instability of training many separate Gaussian models.
+
 ## Tests
 
 ```powershell

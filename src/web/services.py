@@ -39,25 +39,32 @@ def _best_axis_permutation(
     mesh_vertices: np.ndarray,
     cloud_center: np.ndarray,
     mesh_center: np.ndarray,
-    scale_factor: np.float32,
     sample_count: int = 2500,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
     cloud_sample = _even_sample(cloud_xyz, sample_count)
     mesh_sample = _even_sample(mesh_vertices, sample_count)
     best_rotation = np.eye(3, dtype=np.float32)
+    best_scale = np.ones(3, dtype=np.float32)
     best_score = float("inf")
+    mesh_min, mesh_max = _robust_bounds(mesh_sample)
+    mesh_extent = np.maximum(mesh_max - mesh_min, 1.0e-6)
     for permutation in itertools.permutations(range(3)):
         base = np.zeros((3, 3), dtype=np.float32)
         for row, column in enumerate(permutation):
             base[row, column] = 1.0
         for signs in itertools.product((-1.0, 1.0), repeat=3):
             rotation = (np.asarray(signs, dtype=np.float32)[:, None] * base).astype(np.float32)
-            transformed_cloud = ((cloud_sample - cloud_center[None, :]) @ rotation.T) * scale_factor + mesh_center[None, :]
+            rotated_cloud = (cloud_sample - cloud_center[None, :]) @ rotation.T
+            cloud_min, cloud_max = _robust_bounds(rotated_cloud)
+            cloud_extent = np.maximum(cloud_max - cloud_min, 1.0e-6)
+            scale_factor = np.clip(mesh_extent / cloud_extent, 0.01, 100.0).astype(np.float32)
+            transformed_cloud = rotated_cloud * scale_factor[None, :] + mesh_center[None, :]
             score = _mean_nearest_distance(transformed_cloud, mesh_sample)
             if score < best_score:
                 best_score = score
                 best_rotation = rotation
-    return best_rotation
+                best_scale = scale_factor
+    return best_rotation, best_scale
 
 
 def _even_sample(points: np.ndarray, sample_count: int) -> np.ndarray:
@@ -127,6 +134,85 @@ def _weighted_quantile(values: np.ndarray, weights: np.ndarray, quantile: float)
     return np.float32(sorted_values[np.searchsorted(cumulative, cutoff, side="left")])
 
 
+def _quaternion_wxyz_to_matrix(quaternion: np.ndarray) -> np.ndarray:
+    q = np.asarray(quaternion, dtype=np.float32)
+    norm = max(float(np.linalg.norm(q)), 1.0e-8)
+    w, x, y, z = (q / norm).tolist()
+    return np.asarray(
+        [
+            [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+            [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+            [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+        ],
+        dtype=np.float32,
+    )
+
+
+def _matrix_to_quaternion_wxyz(matrix: np.ndarray) -> np.ndarray:
+    m = np.asarray(matrix, dtype=np.float32)
+    trace = float(np.trace(m))
+    if trace > 0.0:
+        s = math.sqrt(trace + 1.0) * 2.0
+        qw = 0.25 * s
+        qx = (m[2, 1] - m[1, 2]) / s
+        qy = (m[0, 2] - m[2, 0]) / s
+        qz = (m[1, 0] - m[0, 1]) / s
+    else:
+        axis = int(np.argmax(np.diag(m)))
+        if axis == 0:
+            s = math.sqrt(max(1.0 + float(m[0, 0] - m[1, 1] - m[2, 2]), 1.0e-8)) * 2.0
+            qw = (m[2, 1] - m[1, 2]) / s
+            qx = 0.25 * s
+            qy = (m[0, 1] + m[1, 0]) / s
+            qz = (m[0, 2] + m[2, 0]) / s
+        elif axis == 1:
+            s = math.sqrt(max(1.0 + float(m[1, 1] - m[0, 0] - m[2, 2]), 1.0e-8)) * 2.0
+            qw = (m[0, 2] - m[2, 0]) / s
+            qx = (m[0, 1] + m[1, 0]) / s
+            qy = 0.25 * s
+            qz = (m[1, 2] + m[2, 1]) / s
+        else:
+            s = math.sqrt(max(1.0 + float(m[2, 2] - m[0, 0] - m[1, 1]), 1.0e-8)) * 2.0
+            qw = (m[1, 0] - m[0, 1]) / s
+            qx = (m[0, 2] + m[2, 0]) / s
+            qy = (m[1, 2] + m[2, 1]) / s
+            qz = 0.25 * s
+    quat = np.asarray([qw, qx, qy, qz], dtype=np.float32)
+    return quat / max(float(np.linalg.norm(quat)), 1.0e-8)
+
+
+def _transform_gaussian_covariances(
+    scale: np.ndarray,
+    rotation: np.ndarray | None,
+    alignment_rotation: np.ndarray,
+    scale_factor: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    scale_np = np.asarray(scale, dtype=np.float32)
+    if scale_np.ndim == 1 or scale_np.shape[1] == 1:
+        scale_np = np.repeat(scale_np.reshape(-1, 1), 3, axis=1)
+    rotation_np = (
+        np.tile(np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32), (len(scale_np), 1))
+        if rotation is None
+        else np.asarray(rotation, dtype=np.float32)
+    )
+    linear = np.diag(np.asarray(scale_factor, dtype=np.float32)) @ np.asarray(alignment_rotation, dtype=np.float32)
+    transformed_scale = np.empty_like(scale_np)
+    transformed_rotation = np.empty_like(rotation_np)
+    for index, (item_scale, item_rotation) in enumerate(zip(scale_np, rotation_np, strict=True)):
+        local_rotation = _quaternion_wxyz_to_matrix(item_rotation)
+        covariance = local_rotation @ np.diag(np.square(item_scale)) @ local_rotation.T
+        transformed_covariance = linear @ covariance @ linear.T
+        eigenvalues, eigenvectors = np.linalg.eigh(transformed_covariance)
+        order = np.argsort(eigenvalues)[::-1]
+        eigenvalues = np.maximum(eigenvalues[order], 1.0e-12)
+        eigenvectors = eigenvectors[:, order]
+        if np.linalg.det(eigenvectors) < 0.0:
+            eigenvectors[:, 2] *= -1.0
+        transformed_scale[index] = np.sqrt(eigenvalues).astype(np.float32)
+        transformed_rotation[index] = _matrix_to_quaternion_wxyz(eigenvectors)
+    return transformed_scale.astype(np.float32), transformed_rotation.astype(np.float32)
+
+
 @dataclass
 class PreparedModel:
     model_id: str
@@ -142,7 +228,7 @@ class GaussianAlignment:
     cloud_center: np.ndarray
     mesh_center: np.ndarray
     rotation: np.ndarray
-    scale_factor: np.float32
+    scale_factor: np.ndarray
 
 
 class ModelStore:
@@ -198,7 +284,7 @@ class ModelStore:
                 if resolved in seen:
                     continue
                 seen.add(resolved)
-                models.append({"id": self.path_to_id(path), "name": path.name, "source": str(path)})
+                models.append({"id": self.path_to_id(path), "name": self._display_path_name(path), "source": str(path)})
         return models
 
     def list_mesh2splat_lod_sets(self) -> list[dict[str, Any]]:
@@ -379,7 +465,7 @@ class ModelStore:
                 cloud_center=np.zeros(3, dtype=np.float32),
                 mesh_center=np.zeros(3, dtype=np.float32),
                 rotation=np.eye(3, dtype=np.float32),
-                scale_factor=np.float32(1.0),
+                scale_factor=np.ones(3, dtype=np.float32),
             )
         mesh_np = np.asarray(mesh_vertices, dtype=np.float32)
         cloud_np = cloud.xyz.detach().cpu().numpy().astype(np.float32)
@@ -392,15 +478,12 @@ class ModelStore:
         cloud_min, cloud_max = _robust_bounds(cloud_np, weights=weights)
         mesh_center_np = (mesh_min + mesh_max) * 0.5
         cloud_center_np = (cloud_min + cloud_max) * 0.5
-        mesh_extent = max(float(np.max(mesh_max - mesh_min)), 1.0e-6)
-        cloud_extent = max(float(np.max(cloud_max - cloud_min)), 1.0e-6)
-        scale_factor_np = np.clip(mesh_extent / cloud_extent, 0.01, 100.0).astype(np.float32)
-        rotation_np = _best_axis_permutation(cloud_np, mesh_np, cloud_center_np, mesh_center_np, scale_factor_np)
+        rotation_np, scale_factor_np = _best_axis_permutation(cloud_np, mesh_np, cloud_center_np, mesh_center_np)
         return GaussianAlignment(
             cloud_center=cloud_center_np.astype(np.float32),
             mesh_center=mesh_center_np.astype(np.float32),
             rotation=rotation_np.astype(np.float32),
-            scale_factor=scale_factor_np,
+            scale_factor=scale_factor_np.astype(np.float32),
         )
 
     @staticmethod
@@ -409,14 +492,19 @@ class ModelStore:
         rotation = torch.as_tensor(alignment.rotation, dtype=cloud.xyz.dtype, device=device)
         mesh_center = torch.as_tensor(alignment.mesh_center, dtype=cloud.xyz.dtype, device=device)
         cloud_center = torch.as_tensor(alignment.cloud_center, dtype=cloud.xyz.dtype, device=device)
-        scale_factor = torch.as_tensor(float(alignment.scale_factor), dtype=cloud.xyz.dtype, device=device)
-        scale = cloud.scale * scale_factor
+        scale_factor = torch.as_tensor(alignment.scale_factor, dtype=cloud.xyz.dtype, device=device)
+        transformed_scale, transformed_rotation = _transform_gaussian_covariances(
+            cloud.scale.detach().cpu().numpy(),
+            None if cloud.rotation is None else cloud.rotation.detach().cpu().numpy(),
+            alignment.rotation,
+            alignment.scale_factor,
+        )
         return GaussianCloud(
-            xyz=((cloud.xyz - cloud_center[None, :]) @ rotation.T) * scale_factor + mesh_center[None, :],
-            scale=scale,
+            xyz=((cloud.xyz - cloud_center[None, :]) @ rotation.T) * scale_factor[None, :] + mesh_center[None, :],
+            scale=torch.as_tensor(transformed_scale, dtype=cloud.xyz.dtype, device=device),
             color=cloud.color,
             opacity=cloud.opacity,
-            rotation=cloud.rotation,
+            rotation=torch.as_tensor(transformed_rotation, dtype=cloud.xyz.dtype, device=device),
             name=cloud.name,
         )
 
@@ -472,6 +560,17 @@ class ModelStore:
         stem = re.sub(r"[-_]?(\d+)$", "", path.stem.lower())
         stem = stem.replace("-trained", "").replace("_trained", "")
         return stem or path.parent.name.lower()
+
+    def _display_path_name(self, path: Path) -> str:
+        for root in [*self.trained_dirs, *self.mesh2splat_lod_dirs, *self.source_dirs]:
+            try:
+                relative = path.relative_to(root)
+            except ValueError:
+                continue
+            if len(relative.parts) > 1:
+                return " / ".join(relative.parts)
+            return path.name
+        return f"{path.parent.name} / {path.name}"
 
     @staticmethod
     def _prepared_id(model_id: str, lod_counts: list[int], source: str) -> str:

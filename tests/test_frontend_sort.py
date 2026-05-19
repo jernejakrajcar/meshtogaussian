@@ -21,3 +21,19 @@ console.log(JSON.stringify(Array.from(depthSortedOrder(xyz, identity))));
         text=True,
     )
     assert json.loads(completed.stdout) == [1, 0, 2]
+
+
+def test_graphdeco_quaternion_reorders_for_shader() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    script = """
+const { graphDecoToShaderQuat } = await import('./web/raw_gaussian_renderer.js');
+console.log(JSON.stringify(graphDecoToShaderQuat([1, 2, 3, 4])));
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(completed.stdout) == [2, 3, 4, 1]

@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { createRawGaussianRenderer } from "./raw_gaussian_renderer.js";
 import { depthSortedOrder, reorderByOrder } from "./splat_sort.js";
 
 const modelSelect = document.querySelector("#modelSelect");
@@ -21,6 +22,8 @@ const lockCameraButton = document.querySelector("#lockCameraButton");
 const lodSelect = document.querySelector("#lodSelect");
 const pointSize = document.querySelector("#pointSize");
 const opacity = document.querySelector("#opacity");
+const gaussianYOffset = document.querySelector("#gaussianYOffset");
+const gaussianScale = document.querySelector("#gaussianScale");
 const statusBox = document.querySelector("#status");
 const viewer = document.querySelector("#viewer");
 const loadingOverlay = document.querySelector("#loadingOverlay");
@@ -34,7 +37,10 @@ const transitionHint = document.querySelector("#transitionHint");
 const lockTransitionHint = document.querySelector("#lockTransitionHint");
 const lockCameraHint = document.querySelector("#lockCameraHint");
 const uiControls = [...document.querySelectorAll(".sidebar button, .sidebar input, .sidebar select")];
-const APP_VERSION = "debug-ui-logs-1";
+const APP_VERSION = "splat-render-3-raw-webgl";
+const DEFAULT_TRAINED_LOD_COUNTS = [
+  10, 20, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 20000, 50000, 100000,
+];
 
 const state = {
   preparedId: null,
@@ -52,6 +58,7 @@ const state = {
   meshStatus: "",
   transitionCameraUpdateQueued: false,
   transitionViewLock: null,
+  autoSortView: null,
   cameraLock: {
     enabled: false,
     automatic: false,
@@ -60,6 +67,7 @@ const state = {
 };
 const MESH_OPACITY = 1.0;
 const SORT_LOADING_THRESHOLD = 300000;
+const AUTO_SORT_THRESHOLD = 120000;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x111418);
@@ -72,6 +80,10 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.NoToneMapping;
 viewer.appendChild(renderer.domElement);
+const gaussianCanvas = document.createElement("canvas");
+gaussianCanvas.id = "gaussianLayer";
+viewer.appendChild(gaussianCanvas);
+const rawGaussianRenderer = createRawGaussianRenderer(gaussianCanvas);
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -359,7 +371,9 @@ function applyBackgroundTheme() {
 
 function resize() {
   const rect = viewer.getBoundingClientRect();
+  const pixelRatio = Math.min(window.devicePixelRatio, 2);
   renderer.setSize(rect.width, rect.height);
+  rawGaussianRenderer.setSize(rect.width, rect.height, pixelRatio);
   camera.aspect = rect.width / Math.max(rect.height, 1);
   camera.updateProjectionMatrix();
   updateGaussianViewportUniforms();
@@ -367,6 +381,10 @@ function resize() {
 
 function disposeObject(object) {
   if (!object) return;
+  if (object.userData?.kind === "gaussian" && object.dispose) {
+    rawGaussianRenderer.disposeLayer(object);
+    return;
+  }
   scene.remove(object);
   object.traverse?.((child) => {
     child.geometry?.dispose?.();
@@ -395,10 +413,11 @@ function disposeMaterial(material) {
 }
 
 function allGaussianObjects() {
-  const objects = [];
-  scene.traverse((object) => {
-    if (object.userData?.kind === "gaussian") objects.push(object);
-  });
+  const objects = [
+    state.selectedGaussianObject,
+    ...state.transitionObjects.values(),
+    ...state.sortedTransitionObjects.values(),
+  ].filter(Boolean);
   return objects;
 }
 
@@ -561,37 +580,27 @@ function updateCameraLockUi() {
 }
 
 function pointSizeMultiplier() {
-  return 0.15 + Number(pointSize.value) * 2.0;
+  return Number(pointSize.value);
 }
 
-function normalizeSplatScales(scale, count) {
-  const result = new Float32Array(count * 3);
-  for (let i = 0; i < count; i += 1) {
-    const value = scale[i];
-    if (Array.isArray(value)) {
-      result[i * 3 + 0] = Number(value[0]) || 0.001;
-      result[i * 3 + 1] = Number(value[1]) || result[i * 3 + 0];
-      result[i * 3 + 2] = Number(value[2]) || result[i * 3 + 1];
-    } else {
-      const scalar = Number(value) || 0.001;
-      result[i * 3 + 0] = scalar;
-      result[i * 3 + 1] = scalar;
-      result[i * 3 + 2] = scalar;
-    }
-  }
-  return result;
+function gaussianPointScale() {
+  return pointSizeMultiplier() * 8.0;
 }
 
-function normalizeSplatRotations(rotation, count) {
-  const result = new Float32Array(count * 4);
-  for (let i = 0; i < count; i += 1) {
-    const value = rotation?.[i];
-    result[i * 4 + 0] = Array.isArray(value) ? Number(value[0]) || 1 : 1;
-    result[i * 4 + 1] = Array.isArray(value) ? Number(value[1]) || 0 : 0;
-    result[i * 4 + 2] = Array.isArray(value) ? Number(value[2]) || 0 : 0;
-    result[i * 4 + 3] = Array.isArray(value) ? Number(value[3]) || 0 : 0;
-  }
-  return result;
+function gaussianGlobalScale() {
+  const scale = Number(gaussianScale?.value ?? 1);
+  return Number.isFinite(scale) ? scale : 1;
+}
+
+function gaussianGlobalYOffset() {
+  const offset = Number(gaussianYOffset?.value ?? 0);
+  return Number.isFinite(offset) ? offset : 0;
+}
+
+function applyGaussianTransform(object) {
+  if (!object) return;
+  object.userData.yOffset = gaussianGlobalYOffset();
+  object.userData.scale = gaussianGlobalScale();
 }
 
 function rendererViewport() {
@@ -601,119 +610,41 @@ function rendererViewport() {
 }
 
 function buildGaussianPoints(lod) {
-  const count = lod.xyz.length;
-  const geometry = new THREE.InstancedBufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0], 3));
-  geometry.setIndex([0, 1, 2, 0, 2, 3]);
-  geometry.instanceCount = count;
-  geometry.setAttribute("splatCenter", new THREE.InstancedBufferAttribute(new Float32Array(lod.xyz.flat()), 3));
-  geometry.setAttribute("splatColor", new THREE.InstancedBufferAttribute(new Float32Array(lod.color.flat()), 3));
-  geometry.setAttribute("splatOpacity", new THREE.InstancedBufferAttribute(new Float32Array(lod.opacity), 1));
-  geometry.setAttribute("splatScale", new THREE.InstancedBufferAttribute(normalizeSplatScales(lod.scale, count), 3));
-  geometry.setAttribute("splatRotation", new THREE.InstancedBufferAttribute(normalizeSplatRotations(lod.rotation, count), 4));
-  const material = new THREE.ShaderMaterial({
-    transparent: true,
-    depthWrite: false,
-    depthTest: true,
-    side: THREE.DoubleSide,
-    uniforms: {
-      opacityMultiplier: { value: Number(opacity.value) },
-      pointSizeMultiplier: { value: pointSizeMultiplier() },
-      viewport: { value: rendererViewport() },
-    },
-    vertexShader: `
-      attribute vec3 splatCenter;
-      attribute vec3 splatColor;
-      attribute float splatOpacity;
-      attribute vec3 splatScale;
-      attribute vec4 splatRotation;
-      uniform float pointSizeMultiplier;
-      uniform vec2 viewport;
-      varying vec3 vColor;
-      varying float vOpacity;
-      varying vec2 vLocal;
-
-      vec3 rotateByQuat(vec3 v, vec4 q) {
-        vec4 nq = normalize(q);
-        vec3 t = 2.0 * cross(nq.yzw, v);
-        return v + nq.x * t + cross(nq.yzw, t);
-      }
-
-      void main() {
-        vColor = splatColor;
-        vOpacity = splatOpacity;
-        vLocal = position.xy * 2.5;
-
-        vec4 mvPosition = modelViewMatrix * vec4(splatCenter, 1.0);
-        float z = max(0.05, -mvPosition.z);
-        mat3 viewLinear = mat3(modelViewMatrix);
-        vec3 axis0 = viewLinear * rotateByQuat(vec3(splatScale.x, 0.0, 0.0), splatRotation);
-        vec3 axis1 = viewLinear * rotateByQuat(vec3(0.0, splatScale.y, 0.0), splatRotation);
-        vec3 axis2 = viewLinear * rotateByQuat(vec3(0.0, 0.0, splatScale.z), splatRotation);
-
-        float focalX = projectionMatrix[0][0] * viewport.x * 0.5;
-        float focalY = projectionMatrix[1][1] * viewport.y * 0.5;
-        vec2 a0 = vec2(axis0.x * focalX, axis0.y * focalY) / z;
-        vec2 a1 = vec2(axis1.x * focalX, axis1.y * focalY) / z;
-        vec2 a2 = vec2(axis2.x * focalX, axis2.y * focalY) / z;
-
-        float cxx = dot(vec3(a0.x, a1.x, a2.x), vec3(a0.x, a1.x, a2.x));
-        float cxy = dot(vec3(a0.x, a1.x, a2.x), vec3(a0.y, a1.y, a2.y));
-        float cyy = dot(vec3(a0.y, a1.y, a2.y), vec3(a0.y, a1.y, a2.y));
-        float traceHalf = 0.5 * (cxx + cyy);
-        float delta = sqrt(max(0.0, 0.25 * (cxx - cyy) * (cxx - cyy) + cxy * cxy));
-        float lambda0 = max(traceHalf + delta, 0.35);
-        float lambda1 = max(traceHalf - delta, 0.35);
-        vec2 e0 = abs(cxy) + abs(lambda0 - cxx) > 1.0e-5 ? normalize(vec2(cxy, lambda0 - cxx)) : vec2(1.0, 0.0);
-        vec2 e1 = vec2(-e0.y, e0.x);
-
-        float globalScale = pointSizeMultiplier;
-        vec2 offsetPixels = 2.5 * (e0 * position.x * sqrt(lambda0) + e1 * position.y * sqrt(lambda1)) * globalScale;
-        vec4 clip = projectionMatrix * mvPosition;
-        clip.xy += (offsetPixels / viewport) * 2.0 * clip.w;
-        gl_Position = clip;
-      }
-    `,
-    fragmentShader: `
-      uniform float opacityMultiplier;
-      varying vec3 vColor;
-      varying float vOpacity;
-      varying vec2 vLocal;
-      void main() {
-        float r2 = dot(vLocal, vLocal);
-        if (r2 > 6.25) discard;
-        float alpha = exp(-0.5 * r2) * vOpacity * opacityMultiplier;
-        if (alpha < 0.003) discard;
-        gl_FragColor = vec4(vColor, alpha);
-      }
-    `,
-  });
-  const points = new THREE.Mesh(geometry, material);
+  const points = rawGaussianRenderer.uploadScene(lod);
   points.userData.kind = "gaussian";
+  points.opacityMultiplier = Number(opacity.value);
   return points;
 }
 
 function updateGaussianViewportUniforms() {
-  const viewport = rendererViewport();
-  for (const object of allGaussianObjects()) {
-    if (object.material?.uniforms?.viewport) object.material.uniforms.viewport.value.copy(viewport);
-  }
+  rendererViewport();
 }
 
 function applyGaussianMaterial(object, opacityValue = Number(opacity.value)) {
-  if (!object?.material?.uniforms) return;
-  object.material.uniforms.pointSizeMultiplier.value = pointSizeMultiplier();
-  object.material.uniforms.opacityMultiplier.value = opacityValue;
-  if (object.material.uniforms.viewport) object.material.uniforms.viewport.value.copy(rendererViewport());
-  object.material.needsUpdate = true;
+  if (!object) return;
+  applyGaussianTransform(object);
+  object.opacityMultiplier = Math.max(0, Math.min(1, Number(opacityValue) || 0));
+}
+
+function drawRawGaussianLayer() {
+  const viewport = rendererViewport();
+  const visibleObjects = allGaussianObjects().filter((object) => object.visible && object.opacityMultiplier > 0);
+  gaussianCanvas.hidden = visibleObjects.length === 0;
+  rawGaussianRenderer.draw({
+    camera,
+    viewport: [viewport.x, viewport.y],
+    opacity: 1,
+    pointScale: gaussianPointScale(),
+    gaussianScale: gaussianGlobalScale(),
+    yOffset: gaussianGlobalYOffset(),
+    clear: true,
+  });
 }
 
 function hideGaussianObject(object) {
   if (!object) return;
   object.visible = false;
-  if (object.material.uniforms?.opacityMultiplier) applyGaussianMaterial(object, 0);
-  else object.material.opacity = 0;
-  object.material.needsUpdate = true;
+  applyGaussianMaterial(object, 0);
 }
 
 function hideAllGaussians() {
@@ -733,16 +664,20 @@ async function getLod(count) {
 }
 
 function currentTransitionViewKey() {
-  return state.transitionViewLock?.key ?? "free";
+  return state.transitionViewLock?.key ?? state.autoSortView?.key ?? "free";
 }
 
 function makeTransitionViewKey(position, target) {
   const values = [...position.toArray(), ...target.toArray()];
-  return values.map((value) => value.toFixed(4)).join(":");
+  return values.map((value) => value.toFixed(3)).join(":");
 }
 
-function sortedLodForLockedView(lod) {
-  const viewMatrix = state.transitionViewLock?.viewMatrix;
+function currentSortViewMatrix() {
+  return state.transitionViewLock?.viewMatrix ?? state.autoSortView?.viewMatrix ?? null;
+}
+
+function sortedLodForCurrentView(lod) {
+  const viewMatrix = currentSortViewMatrix();
   if (!viewMatrix) return { lod, sortMs: 0 };
   const startedAt = performance.now();
   const order = depthSortedOrder(lod.xyz, viewMatrix.elements);
@@ -759,13 +694,15 @@ function sortedLodForLockedView(lod) {
 
 async function ensureTransitionObject(count) {
   const key = String(count);
-  if (state.transitionViewLock) return ensureSortedTransitionObject(key);
+  if (state.transitionViewLock || state.autoSortView) {
+    const lod = await getLod(key);
+    if (state.transitionViewLock || lod.count <= AUTO_SORT_THRESHOLD) return ensureSortedTransitionObject(key);
+  }
   let object = state.transitionObjects.get(key);
   if (!object) {
     const lod = await getLod(key);
     object = buildGaussianPoints(lod);
     object.visible = false;
-    scene.add(object);
     state.transitionObjects.set(key, object);
   }
   object.userData.lodCount = key;
@@ -785,18 +722,28 @@ async function ensureSortedTransitionObject(count) {
     await new Promise((resolve) => requestAnimationFrame(resolve));
   }
 
-  const { lod: sortedLod, sortMs } = sortedLodForLockedView(lod);
+  const { lod: sortedLod, sortMs } = sortedLodForCurrentView(lod);
   object = buildGaussianPoints(sortedLod);
   object.visible = false;
   object.userData.kind = "gaussian";
   object.userData.lodCount = String(count);
   object.userData.sorted = true;
   object.userData.sortMs = sortMs;
-  scene.add(object);
   state.sortedTransitionObjects.set(key, object);
   state.sortedTransitionStats.set(String(count), { count: sortedLod.count, sortMs });
   loadingOverlay.hidden = !state.busy;
   return object;
+}
+
+function pruneStaleAutoSortedObjects() {
+  if (state.transitionViewLock || !state.autoSortView) return;
+  const suffix = `:${state.autoSortView.key}`;
+  for (const [key, object] of state.sortedTransitionObjects.entries()) {
+    if (!key.endsWith(suffix)) {
+      disposeObject(object);
+      state.sortedTransitionObjects.delete(key);
+    }
+  }
 }
 
 async function prepareAllSortedTransitionObjects() {
@@ -927,6 +874,14 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
   const t = transitionProgressForRadius(radius);
   if (syncSlider) transitionSlider.value = String(t);
   const style = transitionStyleSelect.value;
+  if (!state.transitionViewLock) {
+    camera.updateMatrixWorld();
+    state.autoSortView = {
+      key: makeTransitionViewKey(camera.position, controls.target),
+      viewMatrix: camera.matrixWorldInverse.clone(),
+    };
+    pruneStaleAutoSortedObjects();
+  }
 
   hideAllGaussians();
 
@@ -939,7 +894,7 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
     setStatus([
       "Transition: 0%",
       `Camera distance: ${radius.toFixed(2)}`,
-      state.transitionViewLock ? "View: locked, sorted splats ready on demand" : "View: unlocked, splats are not depth-sorted",
+      state.transitionViewLock ? "View: locked, sorted splats ready on demand" : "View: auto-sorted for current camera",
       "mesh: 1.00",
       ...lodNames.map((name) => `${name}: 0.00`),
       `hidden gaussian objects: ${hiddenCount}`,
@@ -954,13 +909,14 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
       : style === "detail"
         ? detailBuildTransitionWeights(t, state.prepared.viewer.transition)
         : transitionWeights(radius, state.prepared.viewer.transition);
+  const visualMeshHold = 1 - smoothstep(0.68, 0.96, t);
   const meshOpacity = style === "additive"
     ? MESH_OPACITY
     : style === "detail"
       ? weights.mesh
       : t >= 0.995
         ? 0
-        : Math.max(0.04, MESH_OPACITY * weights.mesh);
+        : Math.max(0.08, MESH_OPACITY * Math.max(weights.mesh, visualMeshHold));
   state.meshObject.visible = meshOpacity > 0.001;
   applyMeshOpacity(state.meshObject, meshOpacity);
 
@@ -968,7 +924,7 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
     `Transition: ${Math.round(t * 100)}%`,
     `Style: ${style === "additive" ? "mesh + added detail" : style === "dense" ? "dense LOD cutover" : style === "detail" ? "detail build-up" : "cross-fade"}`,
     `Camera distance: ${radius.toFixed(2)}`,
-    state.transitionViewLock ? "View: locked, depth-sorted splats" : "View: unlocked, unsorted splats",
+    state.transitionViewLock ? "View: locked, depth-sorted splats" : "View: auto-sorted for current camera",
     `mesh: ${meshOpacity.toFixed(2)}`,
   ];
   const activePromises = [];
@@ -1024,6 +980,7 @@ function updateVisibility() {
     updateTransitionView().catch((error) => setStatus(`Transition update failed:\n${error.message}`));
   } else {
     state.transitionRequestId += 1;
+    state.autoSortView = null;
     updateManualVisibility();
   }
 }
@@ -1105,6 +1062,7 @@ async function prepareSelectedModel() {
         model_id: modelSelect.value,
         representation: representationSelect.value,
         trained_ply_id: trainedSelect.value || null,
+        lod_counts: representationSelect.value === "trained" ? DEFAULT_TRAINED_LOD_COUNTS : undefined,
       }),
     });
     setStatus("Loading mesh and viewer objects...");
@@ -1204,7 +1162,6 @@ async function loadSelectedLod() {
   const lod = await getLod(lodSelect.value);
   disposeObject(state.selectedGaussianObject);
   state.selectedGaussianObject = buildGaussianPoints(lod);
-  scene.add(state.selectedGaussianObject);
   updateVisibility();
 }
 
@@ -1231,8 +1188,10 @@ function updatePointMaterial() {
   if (state.busy) return;
   if (state.selectedGaussianObject) applyGaussianMaterial(state.selectedGaussianObject, Number(opacity.value));
   for (const object of state.transitionObjects.values()) {
-    object.material.uniforms.pointSizeMultiplier.value = pointSizeMultiplier();
-    object.material.needsUpdate = true;
+    applyGaussianMaterial(object, object.opacityMultiplier);
+  }
+  for (const object of state.sortedTransitionObjects.values()) {
+    applyGaussianMaterial(object, object.opacityMultiplier);
   }
   updateVisibility();
 }
@@ -1241,6 +1200,7 @@ function animate() {
   requestAnimationFrame(animate);
   controls.update();
   renderer.render(scene, camera);
+  drawRawGaussianLayer();
 }
 
 window.addEventListener("resize", resize);
@@ -1259,6 +1219,8 @@ lockTransitionViewButton.addEventListener("click", toggleTransitionViewLock);
 lockCameraButton.addEventListener("click", toggleCameraLock);
 pointSize.addEventListener("input", updatePointMaterial);
 opacity.addEventListener("input", updatePointMaterial);
+gaussianYOffset.addEventListener("input", updatePointMaterial);
+gaussianScale.addEventListener("input", updatePointMaterial);
 controls.addEventListener("change", scheduleTransitionFromCamera);
 
 resize();
