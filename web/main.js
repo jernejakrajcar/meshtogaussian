@@ -439,13 +439,11 @@ function buildMesh(mesh) {
   geometry.setAttribute("color", new THREE.Float32BufferAttribute(mesh.colors.flat(), 3));
   geometry.setIndex(mesh.faces.flat());
   geometry.computeVertexNormals();
-  const material = new THREE.MeshStandardMaterial({
+  const material = new THREE.MeshBasicMaterial({
     vertexColors: true,
-    metalness: 0.05,
-    roughness: 0.72,
     side: THREE.DoubleSide,
-    transparent: true,
-    opacity: 0.82,
+    transparent: MESH_OPACITY < 0.999,
+    opacity: MESH_OPACITY,
   });
   return new THREE.Mesh(geometry, material);
 }
@@ -465,12 +463,14 @@ async function buildSceneMesh(mesh) {
       root.traverse((child) => {
         if (!child.isMesh) return;
         child.castShadow = false;
-        child.receiveShadow = true;
+        child.receiveShadow = false;
         const materials = Array.isArray(child.material) ? child.material : [child.material];
-        for (const material of materials) {
-          configureLoadedMaterial(material);
+        const configuredMaterials = materials.map((material) => {
+          const configured = configureLoadedMaterial(material);
           if (material.map) texturedMaterialCount += 1;
-        }
+          return configured;
+        });
+        child.material = Array.isArray(child.material) ? configuredMaterials : configuredMaterials[0];
       });
       root.userData.kind = "mesh";
       root.userData.textured = true;
@@ -493,20 +493,25 @@ async function buildSceneMesh(mesh) {
 }
 
 function configureLoadedMaterial(material) {
-  material.side = THREE.DoubleSide;
-  material.transparent = true;
-  material.depthWrite = true;
-  material.opacity = MESH_OPACITY;
+  const basicMaterial = new THREE.MeshBasicMaterial({
+    alphaMap: material.alphaMap ?? null,
+    alphaTest: material.alphaTest ?? 0,
+    color: material.color?.clone?.() ?? new THREE.Color(0xffffff),
+    map: material.map ?? null,
+    opacity: MESH_OPACITY,
+    side: THREE.DoubleSide,
+    transparent: MESH_OPACITY < 0.999 || Boolean(material.transparent && material.opacity < 0.999) || Boolean(material.alphaMap),
+    vertexColors: Boolean(material.vertexColors),
+  });
+  basicMaterial.userData.hasAlpha = Boolean(material.alphaMap || material.transparent);
   if (material.map) {
-    material.map.colorSpace = THREE.SRGBColorSpace;
-    material.map.needsUpdate = true;
-    material.color?.set?.(0xffffff);
-    if ("metalness" in material) material.metalness = 0;
-    if ("roughness" in material) material.roughness = 1;
-    material.emissive?.set?.(0x000000);
-    if ("emissiveIntensity" in material) material.emissiveIntensity = 0;
+    basicMaterial.map.colorSpace = THREE.SRGBColorSpace;
+    basicMaterial.map.needsUpdate = true;
+    basicMaterial.color.set(0xffffff);
   }
-  material.needsUpdate = true;
+  basicMaterial.depthWrite = true;
+  basicMaterial.needsUpdate = true;
+  return basicMaterial;
 }
 
 function applyMeshOpacity(object, value) {
@@ -515,7 +520,7 @@ function applyMeshOpacity(object, value) {
     const materials = child.material ? (Array.isArray(child.material) ? child.material : [child.material]) : [];
     for (const material of materials) {
       material.opacity = value;
-      material.transparent = value < 0.999 || object.userData?.textured;
+      material.transparent = value < 0.999 || Boolean(material.userData?.hasAlpha);
       material.needsUpdate = true;
     }
   });

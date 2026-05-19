@@ -39,9 +39,6 @@ class SyntheticViewRenderer:
         face_depth = points_cam[mesh.faces, 2].mean(axis=1)
         order = np.argsort(face_depth)[::-1]
 
-        light_dir = np.array([0.2, 0.7, 0.5], dtype=np.float32)
-        light_dir /= np.linalg.norm(light_dir)
-
         for face_index in order:
             face = mesh.faces[face_index]
             if not np.all(valid[face]):
@@ -51,13 +48,9 @@ class SyntheticViewRenderer:
             if np.any(z >= -0.01):
                 continue
 
-            world_tri = mesh.vertices[face]
-            normal = np.cross(world_tri[1] - world_tri[0], world_tri[2] - world_tri[0])
-            normal /= max(float(np.linalg.norm(normal)), 1.0e-8)
-            shade = 0.35 + 0.65 * max(0.0, float(np.dot(normal, light_dir)))
             vertex_colors = mesh.vertex_colors[face]
             face_uvs = None if mesh.uvs is None or mesh.texture_image is None else mesh.uvs[face]
-            self._rasterize_triangle(rgb, depth, pts, z, vertex_colors, shade, face_uvs, mesh.texture_image)
+            self._rasterize_triangle(rgb, depth, pts, z, vertex_colors, 1.0, face_uvs, mesh.texture_image)
 
         depth[~np.isfinite(depth)] = 0.0
         return rgb, depth
