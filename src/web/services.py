@@ -5,7 +5,8 @@ import itertools
 import math
 import re
 import shutil
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -16,7 +17,7 @@ import torch
 from src.core.progress import StageLogger
 from src.gaussian.lod import GaussianLODBuilder
 from src.gaussian.model import GaussianCloud
-from src.gaussian.trained_io import build_trained_lods, load_trained_gaussian_ply
+from src.gaussian.trained_io import build_trained_lods, load_trained_gaussian_ply, read_trained_gaussian_count
 from src.geometry.mesh_loader import MeshAsset
 
 SUPPORTED_MESH_EXTENSIONS = {".obj", ".ply", ".gltf", ".glb"}
@@ -181,6 +182,49 @@ def _matrix_to_quaternion_wxyz(matrix: np.ndarray) -> np.ndarray:
     return quat / max(float(np.linalg.norm(quat)), 1.0e-8)
 
 
+def _matrices_to_quaternion_wxyz(matrices: np.ndarray) -> np.ndarray:
+    m = np.asarray(matrices, dtype=np.float32)
+    quaternions = np.empty((len(m), 4), dtype=np.float32)
+    traces = np.trace(m, axis1=1, axis2=2)
+
+    positive = traces > 0.0
+    if np.any(positive):
+        items = m[positive]
+        s = np.sqrt(traces[positive] + 1.0) * 2.0
+        quaternions[positive, 0] = 0.25 * s
+        quaternions[positive, 1] = (items[:, 2, 1] - items[:, 1, 2]) / s
+        quaternions[positive, 2] = (items[:, 0, 2] - items[:, 2, 0]) / s
+        quaternions[positive, 3] = (items[:, 1, 0] - items[:, 0, 1]) / s
+
+    diagonal_axis = np.argmax(np.diagonal(m, axis1=1, axis2=2), axis=1)
+    for axis in range(3):
+        mask = ~positive & (diagonal_axis == axis)
+        if not np.any(mask):
+            continue
+        items = m[mask]
+        if axis == 0:
+            s = np.sqrt(np.maximum(1.0 + items[:, 0, 0] - items[:, 1, 1] - items[:, 2, 2], 1.0e-8)) * 2.0
+            quaternions[mask, 0] = (items[:, 2, 1] - items[:, 1, 2]) / s
+            quaternions[mask, 1] = 0.25 * s
+            quaternions[mask, 2] = (items[:, 0, 1] + items[:, 1, 0]) / s
+            quaternions[mask, 3] = (items[:, 0, 2] + items[:, 2, 0]) / s
+        elif axis == 1:
+            s = np.sqrt(np.maximum(1.0 + items[:, 1, 1] - items[:, 0, 0] - items[:, 2, 2], 1.0e-8)) * 2.0
+            quaternions[mask, 0] = (items[:, 0, 2] - items[:, 2, 0]) / s
+            quaternions[mask, 1] = (items[:, 0, 1] + items[:, 1, 0]) / s
+            quaternions[mask, 2] = 0.25 * s
+            quaternions[mask, 3] = (items[:, 1, 2] + items[:, 2, 1]) / s
+        else:
+            s = np.sqrt(np.maximum(1.0 + items[:, 2, 2] - items[:, 0, 0] - items[:, 1, 1], 1.0e-8)) * 2.0
+            quaternions[mask, 0] = (items[:, 1, 0] - items[:, 0, 1]) / s
+            quaternions[mask, 1] = (items[:, 0, 2] + items[:, 2, 0]) / s
+            quaternions[mask, 2] = (items[:, 1, 2] + items[:, 2, 1]) / s
+            quaternions[mask, 3] = 0.25 * s
+
+    norm = np.maximum(np.linalg.norm(quaternions, axis=1, keepdims=True), 1.0e-8)
+    return quaternions / norm
+
+
 def _transform_gaussian_covariances(
     scale: np.ndarray,
     rotation: np.ndarray | None,
@@ -198,29 +242,53 @@ def _transform_gaussian_covariances(
     linear = np.diag(np.asarray(scale_factor, dtype=np.float32)) @ np.asarray(alignment_rotation, dtype=np.float32)
     transformed_scale = np.empty_like(scale_np)
     transformed_rotation = np.empty_like(rotation_np)
-    for index, (item_scale, item_rotation) in enumerate(zip(scale_np, rotation_np, strict=True)):
-        local_rotation = _quaternion_wxyz_to_matrix(item_rotation)
-        covariance = local_rotation @ np.diag(np.square(item_scale)) @ local_rotation.T
-        transformed_covariance = linear @ covariance @ linear.T
+    batch_size = 131072
+    for start in range(0, len(scale_np), batch_size):
+        end = min(start + batch_size, len(scale_np))
+        item_rotation = rotation_np[start:end]
+        item_rotation = item_rotation / np.maximum(np.linalg.norm(item_rotation, axis=1, keepdims=True), 1.0e-8)
+        w, x, y, z = item_rotation.T
+        local_rotation = np.empty((end - start, 3, 3), dtype=np.float32)
+        local_rotation[:, 0, 0] = 1.0 - 2.0 * (y * y + z * z)
+        local_rotation[:, 0, 1] = 2.0 * (x * y - z * w)
+        local_rotation[:, 0, 2] = 2.0 * (x * z + y * w)
+        local_rotation[:, 1, 0] = 2.0 * (x * y + z * w)
+        local_rotation[:, 1, 1] = 1.0 - 2.0 * (x * x + z * z)
+        local_rotation[:, 1, 2] = 2.0 * (y * z - x * w)
+        local_rotation[:, 2, 0] = 2.0 * (x * z - y * w)
+        local_rotation[:, 2, 1] = 2.0 * (y * z + x * w)
+        local_rotation[:, 2, 2] = 1.0 - 2.0 * (x * x + y * y)
+
+        item_scale_squared = np.square(scale_np[start:end])
+        covariance = (local_rotation * item_scale_squared[:, None, :]) @ local_rotation.transpose(0, 2, 1)
+        transformed_covariance = (linear[None, :, :] @ covariance) @ linear.T[None, :, :]
         eigenvalues, eigenvectors = np.linalg.eigh(transformed_covariance)
-        order = np.argsort(eigenvalues)[::-1]
-        eigenvalues = np.maximum(eigenvalues[order], 1.0e-12)
-        eigenvectors = eigenvectors[:, order]
-        if np.linalg.det(eigenvectors) < 0.0:
-            eigenvectors[:, 2] *= -1.0
-        transformed_scale[index] = np.sqrt(eigenvalues).astype(np.float32)
-        transformed_rotation[index] = _matrix_to_quaternion_wxyz(eigenvectors)
+        eigenvalues = np.maximum(eigenvalues[:, ::-1], 1.0e-12)
+        eigenvectors = eigenvectors[:, :, ::-1]
+        negative_determinant = np.linalg.det(eigenvectors) < 0.0
+        eigenvectors[negative_determinant, :, 2] *= -1.0
+        transformed_scale[start:end] = np.sqrt(eigenvalues).astype(np.float32)
+        transformed_rotation[start:end] = _matrices_to_quaternion_wxyz(eigenvectors)
     return transformed_scale.astype(np.float32), transformed_rotation.astype(np.float32)
+
+
+@dataclass
+class LazyGaussianLOD:
+    path: Path
+    count: int
 
 
 @dataclass
 class PreparedModel:
     model_id: str
     mesh: MeshAsset
-    lods: dict[str, GaussianCloud]
+    lods: dict[str, GaussianCloud | LazyGaussianLOD]
     source: str
     gaussian_source: str | None = None
     representation: str = "initialized"
+    alignment: GaussianAlignment | None = None
+    alignment_reference_key: str | None = None
+    materialize_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
 
 @dataclass(frozen=True)
@@ -287,6 +355,16 @@ class ModelStore:
                 models.append({"id": self.path_to_id(path), "name": self._display_path_name(path), "source": str(path)})
         return models
 
+    def list_mesh2splat_gaussians(self) -> list[dict[str, str]]:
+        self.ensure_dirs()
+        models = []
+        for directory in self.mesh2splat_lod_dirs:
+            if not directory.exists():
+                continue
+            for path in sorted(directory.rglob("*.ply")):
+                models.append({"id": self.path_to_id(path), "name": self._display_path_name(path), "source": str(path)})
+        return models
+
     def list_mesh2splat_lod_sets(self) -> list[dict[str, Any]]:
         self.ensure_dirs()
         grouped: dict[str, list[tuple[int, Path]]] = {}
@@ -332,6 +410,10 @@ class ModelStore:
         representation: str = "initialized",
         trained_ply_id: str | None = None,
     ) -> PreparedModel:
+        if representation == "mesh2splat_lods":
+            raise ValueError(
+                "Automatic Mesh2Splat LOD sets are disabled. Select one Mesh2Splat .ply file as the Gaussian source."
+            )
         with self.logger.stage("web model preparation"):
             source = "generated"
             mesh_path: Path | None = None
@@ -342,30 +424,28 @@ class ModelStore:
             mesh = MeshAsset.load(mesh_path, fallback_color=fallback_color)
             mesh_center, mesh_radius = mesh.normalize_to_unit_sphere()
             gaussian_source = None
-            if representation == "trained":
-                trained_path = self.id_to_trained_path(trained_ply_id) if trained_ply_id else self.find_trained_for_mesh(mesh.name)
-                if trained_path is None:
+            if representation in {"trained", "mesh2splat"}:
+                if representation == "mesh2splat":
+                    if not trained_ply_id:
+                        raise ValueError("Select one Mesh2Splat .ply file before loading the setup.")
+                    gaussian_path = self.id_to_mesh2splat_path(trained_ply_id)
+                    source_cloud = load_trained_gaussian_ply(gaussian_path)
+                    trained_cloud = self._normalize_gaussian_to_mesh(source_cloud, mesh_center, mesh_radius)
+                else:
+                    gaussian_path = self.id_to_trained_path(trained_ply_id) if trained_ply_id else self.find_trained_for_mesh(mesh.name)
+                if gaussian_path is None:
                     raise FileNotFoundError(
                         "No trained Gaussian .ply was provided or found. Generate one with train_gaussians_from_mesh.py first."
                     )
-                trained_cloud = self._align_gaussian_to_normalized_mesh(load_trained_gaussian_ply(trained_path), mesh.vertices)
+                if representation == "trained":
+                    trained_cloud = self._align_gaussian_to_normalized_mesh(load_trained_gaussian_ply(gaussian_path), mesh.vertices)
                 trained_counts = sorted({count for count in lod_counts if count < trained_cloud.count} | {trained_cloud.count})
                 lods = build_trained_lods(trained_cloud, trained_counts)
-                gaussian_source = str(trained_path)
-            elif representation == "mesh2splat_lods":
-                lod_paths = self.find_mesh2splat_lod_set(mesh.name)
-                if not lod_paths:
-                    raise FileNotFoundError(
-                        f"No Mesh2Splat LOD .ply set was found for mesh {mesh.name!r} under data/mesh2splats."
-                    )
-                loaded_lods = {count: load_trained_gaussian_ply(path) for count, path in sorted(lod_paths.items())}
-                reference_count = max(loaded_lods, key=lambda count: loaded_lods[count].count)
-                alignment = self._gaussian_alignment_to_normalized_mesh(loaded_lods[reference_count], mesh.vertices)
-                lods = {str(count): self._apply_gaussian_alignment(cloud, alignment) for count, cloud in loaded_lods.items()}
-                gaussian_source = "; ".join(str(path) for _, path in sorted(lod_paths.items()))
+                gaussian_source = str(gaussian_path)
             else:
                 points, normals, colors = mesh.sample_surface(max(lod_counts), seed=seed)
                 lods = GaussianLODBuilder(points, normals, colors, seed=seed).build_nested(lod_counts)
+                alignment_reference_key = None
             prepared_id = self._prepared_id(f"{model_id or 'demo'}:{representation}:{gaussian_source}", lod_counts, source)
             prepared = PreparedModel(
                 model_id=prepared_id,
@@ -374,6 +454,7 @@ class ModelStore:
                 source=source,
                 gaussian_source=gaussian_source,
                 representation=representation,
+                alignment_reference_key=alignment_reference_key if representation == "mesh2splat_lods" else None,
             )
             self.prepared[prepared_id] = prepared
             return prepared
@@ -407,7 +488,8 @@ class ModelStore:
                 {
                     "count": lod.count,
                     "name": name,
-                    "memory_bytes": lod.memory_bytes(),
+                    "memory_bytes": lod.memory_bytes() if isinstance(lod, GaussianCloud) else 0,
+                    "loaded": isinstance(lod, GaussianCloud),
                 }
                 for name, lod in sorted(prepared.lods.items(), key=lambda item: int(item[0]))
             ],
@@ -417,7 +499,7 @@ class ModelStore:
         key = str(count)
         if key not in prepared.lods:
             raise KeyError(f"LOD {key!r} does not exist for model {prepared.model_id!r}.")
-        lod = prepared.lods[key]
+        lod = self._materialize_lod(prepared, key)
         return {
             "model_id": prepared.model_id,
             "count": lod.count,
@@ -431,6 +513,58 @@ class ModelStore:
                 else lod.rotation.detach().cpu().numpy().astype(float).tolist()
             ),
         }
+
+    def serialize_lod_binary(self, prepared: PreparedModel, count: str | int) -> bytes:
+        key = str(count)
+        if key not in prepared.lods:
+            raise KeyError(f"LOD {key!r} does not exist for model {prepared.model_id!r}.")
+        lod = self._materialize_lod(prepared, key)
+        scale = lod.scale.detach().cpu().numpy().astype("<f4", copy=False)
+        if scale.ndim == 1 or scale.shape[1] == 1:
+            scale = np.repeat(scale.reshape(-1, 1), 3, axis=1)
+        rotation = (
+            np.tile(np.asarray([1.0, 0.0, 0.0, 0.0], dtype="<f4"), (lod.count, 1))
+            if lod.rotation is None
+            else lod.rotation.detach().cpu().numpy().astype("<f4", copy=False)
+        )
+        fields = [
+            np.asarray([lod.count], dtype="<u4").tobytes(),
+            lod.xyz.detach().cpu().numpy().astype("<f4", copy=False).tobytes(),
+            scale.tobytes(),
+            lod.color.detach().cpu().numpy().astype("<f4", copy=False).tobytes(),
+            lod.opacity.detach().cpu().numpy().astype("<f4", copy=False).reshape(-1).tobytes(),
+            rotation.tobytes(),
+        ]
+        return b"".join(fields)
+
+    def _materialize_lod(self, prepared: PreparedModel, key: str) -> GaussianCloud:
+        with prepared.materialize_lock:
+            item = prepared.lods[key]
+            if isinstance(item, GaussianCloud):
+                return item
+            if prepared.representation != "mesh2splat_lods":
+                raise TypeError(f"Unexpected lazy LOD for representation {prepared.representation!r}.")
+
+            reference_key = prepared.alignment_reference_key
+            if reference_key is None:
+                raise ValueError("Mesh2Splat preparation is missing an alignment reference LOD.")
+
+            requested_raw: GaussianCloud | None = None
+            if prepared.alignment is None:
+                reference = prepared.lods[reference_key]
+                if isinstance(reference, GaussianCloud):
+                    reference_raw = reference
+                else:
+                    reference_raw = load_trained_gaussian_ply(reference.path)
+                    if reference_key == key:
+                        requested_raw = reference_raw
+                prepared.alignment = self._gaussian_alignment_to_normalized_mesh(reference_raw, prepared.mesh.vertices)
+
+            if requested_raw is None:
+                requested_raw = load_trained_gaussian_ply(item.path)
+            transformed = self._apply_gaussian_alignment(requested_raw, prepared.alignment)
+            prepared.lods[key] = transformed
+            return transformed
 
     @staticmethod
     def path_to_id(path: str | Path) -> str:
@@ -525,6 +659,12 @@ class ModelStore:
             return path
         raise KeyError(f"Unknown trained Gaussian id {model_id!r}.")
 
+    def id_to_mesh2splat_path(self, model_id: str) -> Path:
+        for model in self.list_mesh2splat_gaussians():
+            if model["id"] == model_id:
+                return Path(model["source"])
+        raise KeyError(f"Unknown Mesh2Splat Gaussian id {model_id!r}.")
+
     def find_trained_for_mesh(self, mesh_name: str) -> Path | None:
         key = mesh_name.lower()
         for model in self.list_trained_gaussians():
@@ -536,7 +676,6 @@ class ModelStore:
     def find_mesh2splat_lod_set(self, mesh_name: str) -> dict[int, Path]:
         mesh_key = mesh_name.lower()
         candidates: dict[int, Path] = {}
-        fallback: dict[int, Path] = {}
         for directory in self.mesh2splat_lod_dirs:
             if not directory.exists():
                 continue
@@ -545,10 +684,9 @@ class ModelStore:
                 if count is None:
                     continue
                 group_key = self._lod_group_key(path)
-                if mesh_key in group_key or group_key in mesh_key:
+                if group_key == mesh_key:
                     candidates[count] = path
-                fallback[count] = path
-        return candidates or fallback
+        return candidates
 
     @staticmethod
     def _count_from_lod_filename(path: Path) -> int | None:

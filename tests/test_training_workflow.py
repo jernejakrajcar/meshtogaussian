@@ -17,7 +17,7 @@ from src.geometry.mesh_loader import MeshAsset
 from src.render.mesh_renderer import SyntheticViewRenderer
 from src.training.dataset_export import export_synthetic_colmap_dataset
 from src.training.gsplat_runner import build_gsplat_command, check_cuda_training_environment
-from src.web.services import ModelStore
+from src.web.services import ModelStore, _quaternion_wxyz_to_matrix, _transform_gaussian_covariances
 from src.gaussian.model import GaussianCloud
 import torch
 
@@ -215,7 +215,7 @@ def test_trained_gaussian_loader_uses_visible_anisotropic_scale(tmp_path: Path) 
     )
     cloud = load_trained_gaussian_ply(ply)
     scale = cloud.scale.detach().cpu().numpy()
-    assert np.allclose(scale, [[np.exp(-6), np.exp(-6), 0.001]], atol=1.0e-6)
+    assert np.allclose(scale, [[np.exp(-6), np.exp(-6), 1.0e-8]], atol=1.0e-10)
     assert cloud.rotation is not None
     assert np.allclose(cloud.rotation.detach().cpu().numpy(), [[1, 0, 0, 0]], atol=1.0e-6)
 
@@ -288,6 +288,56 @@ def test_mesh2splat_lod_alignment_reuses_dense_lod_transform() -> None:
     assert np.allclose(aligned_dense.min(axis=0), mesh_vertices.min(axis=0), atol=1.0e-4)
     assert np.allclose(aligned_dense.max(axis=0), mesh_vertices.max(axis=0), atol=1.0e-4)
     assert np.allclose(aligned_sparse, mesh_vertices[sparse_indices], atol=1.0e-4)
+
+
+def test_gaussian_covariance_transform_preserves_expected_covariances() -> None:
+    scale = np.asarray(
+        [[0.03, 0.07, 0.11], [0.18, 0.04, 0.09], [0.06, 0.06, 0.02]],
+        dtype=np.float32,
+    )
+    rotation = np.asarray(
+        [[1.0, 0.0, 0.0, 0.0], [0.8, 0.3, -0.2, 0.4], [0.5, -0.5, 0.5, 0.5]],
+        dtype=np.float32,
+    )
+    rotation /= np.linalg.norm(rotation, axis=1, keepdims=True)
+    alignment_rotation = np.asarray(
+        [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        dtype=np.float32,
+    )
+    scale_factor = np.asarray([1.5, 0.6, 2.0], dtype=np.float32)
+
+    transformed_scale, transformed_rotation = _transform_gaussian_covariances(
+        scale,
+        rotation,
+        alignment_rotation,
+        scale_factor,
+    )
+    linear = np.diag(scale_factor) @ alignment_rotation
+    for source_scale, source_rotation, result_scale, result_rotation in zip(
+        scale,
+        rotation,
+        transformed_scale,
+        transformed_rotation,
+        strict=True,
+    ):
+        source_matrix = _quaternion_wxyz_to_matrix(source_rotation)
+        source_covariance = source_matrix @ np.diag(np.square(source_scale)) @ source_matrix.T
+        expected_covariance = linear @ source_covariance @ linear.T
+        result_matrix = _quaternion_wxyz_to_matrix(result_rotation)
+        result_covariance = result_matrix @ np.diag(np.square(result_scale)) @ result_matrix.T
+        assert np.allclose(result_covariance, expected_covariance, atol=1.0e-6)
+
+
+def test_mesh2splat_lod_matching_does_not_use_partial_mesh_names(tmp_path: Path) -> None:
+    for name in ["plant-100.ply", "plan-200.ply"]:
+        (tmp_path / name).write_text("ply\n", encoding="ascii")
+
+    store = ModelStore(mesh2splat_lod_dirs=[tmp_path])
+    matched = store.find_mesh2splat_lod_set("plant")
+
+    assert list(matched) == [100]
+    assert matched[100].name == "plant-100.ply"
+    assert store.find_mesh2splat_lod_set("unknown") == {}
 
 
 def test_mesh2splat_command_uses_headless_contract(tmp_path: Path) -> None:

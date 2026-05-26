@@ -37,6 +37,7 @@ layout(location = 1) in vec3 aPosition;
 layout(location = 2) in vec4 aColor;
 layout(location = 3) in vec3 aScale;
 layout(location = 4) in vec4 aQuat;
+layout(location = 5) in float aRank;
 
 uniform mat4 uViewMatrix;
 uniform mat4 uProjectionMatrix;
@@ -47,6 +48,10 @@ uniform float uMaxPointSize;
 uniform float uMaxGaussianPointSize;
 uniform vec2 uViewport;
 uniform float uOpacityMultiplier;
+uniform float uRevealEnabled;
+uniform float uRevealFullCount;
+uniform float uRevealPartialCount;
+uniform float uRevealMix;
 
 out vec4 vColor;
 out vec2 vDxPixels;
@@ -66,8 +71,34 @@ mat3 quatToMat3(vec4 q) {
 }
 
 void main() {
+  float reveal = 1.0;
+  if (uRevealEnabled > 0.5) {
+    if (aRank >= uRevealPartialCount) {
+      reveal = 0.0;
+    } else if (aRank >= uRevealFullCount) {
+      reveal = uRevealMix;
+    }
+  }
+  if (reveal <= 0.0) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    vDxPixels = vec2(0.0);
+    vInvCov2 = mat2(1.0);
+    vColor = vec4(0.0);
+    return;
+  }
+
   vec4 viewPos = uViewMatrix * vec4(aPosition + vec3(0.0, uYOffset, 0.0), 1.0);
-  float depth = max(-viewPos.z, 0.0001);
+  float depth = -viewPos.z;
+
+  // A screen-aligned quad cannot be safely clipped through the camera plane.
+  // Reject near/behind-camera splats instead of projecting them into huge streaks.
+  if (depth <= 0.05) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    vDxPixels = vec2(0.0);
+    vInvCov2 = mat2(1.0);
+    vColor = vec4(0.0);
+    return;
+  }
 
   vec3 safeScale = max(aScale * uGaussianScale, vec3(1e-6));
   mat3 R = quatToMat3(normalize(aQuat));
@@ -80,7 +111,7 @@ void main() {
   mat3 viewRot = mat3(uViewMatrix);
   mat3 sigmaView = viewRot * sigmaWorld * transpose(viewRot);
 
-  float z = max(depth, 0.05);
+  float z = depth;
   float x = viewPos.x;
   float y = viewPos.y;
   float invZ = 1.0 / z;
@@ -131,7 +162,7 @@ void main() {
   gl_Position = clip;
   vDxPixels = offsetPixels;
 
-  float alpha = clamp(aColor.a * uOpacityMultiplier, 0.0, 1.0);
+  float alpha = clamp(aColor.a * uOpacityMultiplier * reveal, 0.0, 1.0);
   vColor = vec4(aColor.rgb * alpha, alpha);
 }
 `;
@@ -157,6 +188,9 @@ void main() {
 `;
 
 function flattenVec3(values, count, fallback = 0) {
+  if (ArrayBuffer.isView(values) && values.length === count * 3) {
+    return values instanceof Float32Array ? values : new Float32Array(values);
+  }
   const result = new Float32Array(count * 3);
   for (let i = 0; i < count; i += 1) {
     const value = values?.[i];
@@ -177,10 +211,16 @@ function flattenVec3(values, count, fallback = 0) {
 function flattenColors(colors, opacity, count) {
   const result = new Float32Array(count * 4);
   for (let i = 0; i < count; i += 1) {
-    const color = colors?.[i] ?? [0.85, 0.68, 0.36];
-    result[i * 4 + 0] = Number(color[0]) || 0;
-    result[i * 4 + 1] = Number(color[1]) || 0;
-    result[i * 4 + 2] = Number(color[2]) || 0;
+    if (ArrayBuffer.isView(colors)) {
+      result[i * 4 + 0] = colors[i * 3];
+      result[i * 4 + 1] = colors[i * 3 + 1];
+      result[i * 4 + 2] = colors[i * 3 + 2];
+    } else {
+      const color = colors?.[i] ?? [0.85, 0.68, 0.36];
+      result[i * 4 + 0] = Number(color[0]) || 0;
+      result[i * 4 + 1] = Number(color[1]) || 0;
+      result[i * 4 + 2] = Number(color[2]) || 0;
+    }
     result[i * 4 + 3] = Math.max(0, Math.min(1, Number(opacity?.[i]) || 0));
   }
   return result;
@@ -194,17 +234,39 @@ export function graphDecoToShaderQuat(value) {
 function flattenRotations(rotations, count) {
   const result = new Float32Array(count * 4);
   for (let i = 0; i < count; i += 1) {
-    const quat = graphDecoToShaderQuat(rotations?.[i]);
-    result[i * 4 + 0] = quat[0];
-    result[i * 4 + 1] = quat[1];
-    result[i * 4 + 2] = quat[2];
-    result[i * 4 + 3] = quat[3];
+    if (ArrayBuffer.isView(rotations)) {
+      result[i * 4 + 0] = rotations[i * 4 + 1];
+      result[i * 4 + 1] = rotations[i * 4 + 2];
+      result[i * 4 + 2] = rotations[i * 4 + 3];
+      result[i * 4 + 3] = rotations[i * 4];
+    } else {
+      const quat = graphDecoToShaderQuat(rotations?.[i]);
+      result[i * 4 + 0] = quat[0];
+      result[i * 4 + 1] = quat[1];
+      result[i * 4 + 2] = quat[2];
+      result[i * 4 + 3] = quat[3];
+    }
   }
   return result;
 }
 
+function flattenRanks(ranks, count) {
+  if (ArrayBuffer.isView(ranks) && ranks.length === count) {
+    return ranks instanceof Float32Array ? ranks : new Float32Array(ranks);
+  }
+  const result = new Float32Array(count);
+  for (let i = 0; i < count; i += 1) result[i] = i;
+  return result;
+}
+
+export function detailRevealAlpha(rank, fullCount, partialCount, mix) {
+  if (rank < fullCount) return 1;
+  if (rank < partialCount) return mix;
+  return 0;
+}
+
 function createLayer(gl, lod) {
-  const count = lod.xyz.length;
+  const count = Number(lod.count) || (ArrayBuffer.isView(lod.xyz) ? lod.xyz.length / 3 : lod.xyz.length);
   const vao = gl.createVertexArray();
   const buffers = {
     corners: gl.createBuffer(),
@@ -213,6 +275,7 @@ function createLayer(gl, lod) {
     colors: gl.createBuffer(),
     scales: gl.createBuffer(),
     rotations: gl.createBuffer(),
+    ranks: gl.createBuffer(),
   };
   if (!vao || Object.values(buffers).some((buffer) => !buffer)) {
     throw new Error("Failed to create raw Gaussian buffers.");
@@ -251,6 +314,12 @@ function createLayer(gl, lod) {
   gl.enableVertexAttribArray(4);
   gl.vertexAttribPointer(4, 4, gl.FLOAT, false, 0, 0);
   gl.vertexAttribDivisor(4, 1);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffers.ranks);
+  gl.bufferData(gl.ARRAY_BUFFER, flattenRanks(lod.rank, count), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(5);
+  gl.vertexAttribPointer(5, 1, gl.FLOAT, false, 0, 0);
+  gl.vertexAttribDivisor(5, 1);
   gl.bindVertexArray(null);
   gl.bindBuffer(gl.ARRAY_BUFFER, null);
   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
@@ -258,6 +327,7 @@ function createLayer(gl, lod) {
   return {
     visible: true,
     opacityMultiplier: 1,
+    reveal: null,
     geometry: { instanceCount: count },
     userData: { kind: "gaussian" },
     dispose() {
@@ -284,6 +354,10 @@ export function createRawGaussianRenderer(canvas, options = {}) {
     maxGaussianPointSize: gl.getUniformLocation(program, "uMaxGaussianPointSize"),
     viewport: gl.getUniformLocation(program, "uViewport"),
     opacityMultiplier: gl.getUniformLocation(program, "uOpacityMultiplier"),
+    revealEnabled: gl.getUniformLocation(program, "uRevealEnabled"),
+    revealFullCount: gl.getUniformLocation(program, "uRevealFullCount"),
+    revealPartialCount: gl.getUniformLocation(program, "uRevealPartialCount"),
+    revealMix: gl.getUniformLocation(program, "uRevealMix"),
   };
   const layers = new Set();
 
@@ -335,6 +409,10 @@ export function createRawGaussianRenderer(canvas, options = {}) {
     for (const layer of layers) {
       if (!layer.visible || layer.opacityMultiplier <= 0) continue;
       gl.uniform1f(uniforms.opacityMultiplier, opacity * layer.opacityMultiplier);
+      gl.uniform1f(uniforms.revealEnabled, layer.reveal ? 1 : 0);
+      gl.uniform1f(uniforms.revealFullCount, layer.reveal?.fullCount ?? layer._raw.count);
+      gl.uniform1f(uniforms.revealPartialCount, layer.reveal?.partialCount ?? layer._raw.count);
+      gl.uniform1f(uniforms.revealMix, layer.reveal?.mix ?? 0);
       gl.bindVertexArray(layer._raw.vao);
       gl.drawElementsInstanced(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0, layer._raw.count);
     }

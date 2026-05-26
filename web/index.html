@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Mesh-to-Gaussian Visualizer</title>
-    <link rel="stylesheet" href="/static/styles.css?v=splat-render-3-raw-webgl" />
+    <link rel="stylesheet" href="/static/styles.css?v=splat-render-13-detail-dense-ramp" />
   </head>
   <body>
     <main class="app">
@@ -35,16 +35,16 @@
             Gaussian data source
             <select id="representationSelect">
               <option value="trained">Single trained PLY</option>
-              <option value="mesh2splat_lods">Mesh2Splat LOD files</option>
+              <option value="mesh2splat">Single Mesh2Splat PLY</option>
               <option value="initialized">Mesh-sampled preview</option>
             </select>
-            <span id="representationHint" class="hint">Uses matching files from data/mesh2splats.</span>
+            <span id="representationHint" class="hint">Builds viewer LODs from one selected Mesh2Splat .ply.</span>
           </label>
 
           <label class="control">
-            Trained Gaussian PLY
-            <select id="trainedSelect"></select>
-            <span id="trainedHint" class="hint">Only used for Single trained PLY.</span>
+            Gaussian PLY file
+            <select id="gaussianSelect"></select>
+            <span id="trainedHint" class="hint">Choose exactly one source .ply file.</span>
           </label>
 
           <div class="subsection">
@@ -80,7 +80,7 @@
             Transition style
             <select id="transitionStyleSelect">
               <option value="crossfade">Cross-fade mesh to splats</option>
-              <option value="detail">Detail build-up</option>
+              <option value="detail">Detail over mesh</option>
               <option value="additive">Keep mesh + add detail</option>
               <option value="dense">Dense LOD cutover</option>
             </select>
@@ -157,6 +157,6 @@
         }
       }
     </script>
-    <script type="module" src="/static/main.js?v=splat-render-3-raw-webgl"></script>
+    <script type="module" src="/static/main.js?v=splat-render-13-detail-dense-ramp"></script>
   </body>
 </html>

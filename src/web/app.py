@@ -14,7 +14,7 @@ def create_app(config_path: str | Path = "configs/default.yaml", data_dir: str |
     try:
         from fastapi import Body, FastAPI, File, HTTPException, UploadFile
         from fastapi.middleware.cors import CORSMiddleware
-        from fastapi.responses import FileResponse
+        from fastapi.responses import FileResponse, Response
         from fastapi.staticfiles import StaticFiles
     except Exception as exc:
         raise RuntimeError(
@@ -55,7 +55,7 @@ def create_app(config_path: str | Path = "configs/default.yaml", data_dir: str |
             "elevation_degrees": float(demo_cfg.get("elevation_degrees", 10.0)),
             "transition": cfg.get("transition", {}),
         }
-        if payload.get("representation") in {"mesh2splat_lods", "trained"}:
+        if payload.get("representation") in {"mesh2splat_lods", "mesh2splat", "trained"}:
             payload["viewer"]["transition"] = _proportional_transition_for_lods(
                 [str(lod["name"]) for lod in payload.get("lods", [])],
                 cfg.get("transition", {}),
@@ -86,6 +86,10 @@ def create_app(config_path: str | Path = "configs/default.yaml", data_dir: str |
     @app.get("/api/trained-gaussians")
     def trained_gaussians():
         return {"models": store.list_trained_gaussians()}
+
+    @app.get("/api/mesh2splat-gaussians")
+    def mesh2splat_gaussians():
+        return {"models": store.list_mesh2splat_gaussians()}
 
     @app.get("/api/mesh2splat-lod-sets")
     def mesh2splat_lod_sets():
@@ -164,6 +168,16 @@ def create_app(config_path: str | Path = "configs/default.yaml", data_dir: str |
     def lod(model_id: str, count: int):
         try:
             return store.serialize_lod(store.get_prepared(model_id), count)
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/model/{model_id}/lod/{count}/binary")
+    def binary_lod(model_id: str, count: int):
+        try:
+            return Response(
+                content=store.serialize_lod_binary(store.get_prepared(model_id), count),
+                media_type="application/octet-stream",
+            )
         except Exception as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

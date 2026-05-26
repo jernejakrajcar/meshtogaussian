@@ -10,6 +10,21 @@ from src.gaussian.model import GaussianCloud
 SH_C0 = 0.28209479177387814
 
 
+def read_trained_gaussian_count(path: str | Path) -> int:
+    target = Path(path)
+    with target.open("rb") as handle:
+        while True:
+            line = handle.readline()
+            if not line:
+                raise ValueError(f"{path} is not a valid PLY file.")
+            text = line.decode("ascii", errors="strict").strip()
+            parts = text.split()
+            if len(parts) >= 3 and parts[:2] == ["element", "vertex"]:
+                return int(parts[2])
+            if text == "end_header":
+                return 0
+
+
 def load_trained_gaussian_ply(path: str | Path, device: torch.device | str = "cpu") -> GaussianCloud:
     data = _read_ascii_vertex_ply(path)
     required = {"x", "y", "z"}
@@ -172,7 +187,9 @@ def _extract_scale(data: dict[str, np.ndarray]) -> np.ndarray:
         scale = data["scale"][:, None]
     else:
         scale = np.full((len(data["x"]), 1), 0.015, dtype=np.float32)
-    return np.clip(scale, 0.001, 0.35).astype(np.float32)
+    # Preserve thin surface splats from Mesh2Splat/GraphDeco exports. Raising
+    # their smallest axis to 0.001 turns surface disks into blurry blobs.
+    return np.clip(scale, 1.0e-8, 0.35).astype(np.float32)
 
 
 def _extract_rotation(data: dict[str, np.ndarray]) -> np.ndarray | None:

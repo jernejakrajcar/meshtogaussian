@@ -11,7 +11,7 @@ const prepareButton = document.querySelector("#prepareButton");
 const convertMesh2SplatButton = document.querySelector("#convertMesh2SplatButton");
 const mesh2splatDensity = document.querySelector("#mesh2splatDensity");
 const representationSelect = document.querySelector("#representationSelect");
-const trainedSelect = document.querySelector("#trainedSelect");
+const gaussianSelect = document.querySelector("#gaussianSelect");
 const modeSelect = document.querySelector("#modeSelect");
 const transitionStyleSelect = document.querySelector("#transitionStyleSelect");
 const backgroundSelect = document.querySelector("#backgroundSelect");
@@ -37,7 +37,7 @@ const transitionHint = document.querySelector("#transitionHint");
 const lockTransitionHint = document.querySelector("#lockTransitionHint");
 const lockCameraHint = document.querySelector("#lockCameraHint");
 const uiControls = [...document.querySelectorAll(".sidebar button, .sidebar input, .sidebar select")];
-const APP_VERSION = "splat-render-3-raw-webgl";
+const APP_VERSION = "splat-render-13-detail-dense-ramp";
 const DEFAULT_TRAINED_LOD_COUNTS = [
   10, 20, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 20000, 50000, 100000,
 ];
@@ -51,6 +51,11 @@ const state = {
   sortedTransitionObjects: new Map(),
   sortedTransitionStats: new Map(),
   lodCache: new Map(),
+  selectedLodRequestId: 0,
+  gaussianSources: {
+    trained: [],
+    mesh2splat: [],
+  },
   transitionRequestId: 0,
   busy: false,
   busyStartedAt: 0,
@@ -58,6 +63,7 @@ const state = {
   meshStatus: "",
   transitionCameraUpdateQueued: false,
   transitionViewLock: null,
+  detailPreviewActive: false,
   autoSortView: null,
   cameraLock: {
     enabled: false,
@@ -116,7 +122,7 @@ function buildStatusContext() {
   const prepared = state.prepared;
   const representation = prepared ? representationLabel(prepared.representation) : representationLabel(representationSelect.value);
   const gaussianSource = prepared?.gaussian_source || "not loaded";
-  const lodCounts = prepared?.lods?.map((lod) => `${lod.name}:${lod.count.toLocaleString()}`).join(", ") || "not loaded";
+  const lodCounts = prepared?.lods?.map((lod) => `${lod.name}:${lod.count.toLocaleString()}${lod.loaded ? "" : " (on demand)"}`).join(", ") || "not loaded";
   const lockState = state.transitionViewLock
     ? `locked (${state.sortedTransitionObjects.size} sorted object(s))`
     : "unlocked";
@@ -134,7 +140,7 @@ function buildStatusContext() {
 }
 
 function representationLabel(value) {
-  if (value === "mesh2splat_lods") return "Mesh2Splat LOD files";
+  if (value === "mesh2splat") return "Single Mesh2Splat PLY";
   if (value === "trained") return "Single trained PLY";
   if (value === "initialized") return "Mesh-sampled preview";
   return value || "unknown";
@@ -195,12 +201,13 @@ function updateControlAvailability() {
   if (state.busy) return;
   for (const control of uiControls) setControlAvailability(control, true);
   const hasPrepared = Boolean(state.prepared);
+  const hasSelectedModel = Boolean(modelSelect.value);
   const inTransition = modeSelect.value === "transition";
   const inLodView = modeSelect.value === "gaussian" || modeSelect.value === "both";
-  const usesTrainedPly = representationSelect.value === "trained";
-  const isDemoModel = modelSelect.value?.startsWith("demo:");
+  const usesSelectedPly = representationSelect.value === "trained" || representationSelect.value === "mesh2splat";
 
-  setControlAvailability(trainedSelect, usesTrainedPly, "Only used for Single trained PLY.");
+  setControlAvailability(prepareButton, hasSelectedModel, "Choose a source model first.");
+  setControlAvailability(gaussianSelect, usesSelectedPly, "Only used for a single Gaussian PLY source.");
   setControlAvailability(transitionStyleSelect, inTransition, "Only used in Transition mode.");
   setControlAvailability(transitionSlider, inTransition, "Only used in Transition mode.");
   setControlAvailability(lodSelect, hasPrepared && inLodView, inTransition
@@ -208,8 +215,8 @@ function updateControlAvailability() {
     : "Load a setup and choose Mesh + LOD or Selected Gaussian LOD.");
   setControlAvailability(lockTransitionViewButton, hasPrepared && inTransition, "Only for Transition mode; depth-sorts splats for current camera.");
   setControlAvailability(lockCameraButton, hasPrepared && inLodView, "For Gaussian/Both view with trained splats.");
-  setControlAvailability(convertMesh2SplatButton, !isDemoModel, "Mesh2Splat conversion requires a real mesh file.");
-  setControlAvailability(mesh2splatDensity, !isDemoModel, "Mesh2Splat conversion requires a real mesh file.");
+  setControlAvailability(convertMesh2SplatButton, hasSelectedModel, "Choose a source model first.");
+  setControlAvailability(mesh2splatDensity, hasSelectedModel, "Choose a source model first.");
 
   updateInlineHints();
   updateTransitionLockUi();
@@ -218,19 +225,19 @@ function updateControlAvailability() {
 
 function updateInlineHints() {
   const sourceHints = {
-    mesh2splat_lods: "Uses matching files from data/mesh2splats.",
+    mesh2splat: "Builds viewer LODs from one selected Mesh2Splat .ply.",
     trained: "Builds viewer LODs from one trained .ply.",
     initialized: "Fallback preview, not trained splats.",
   };
-  const usesTrainedPly = representationSelect.value === "trained";
+  const usesSelectedPly = representationSelect.value === "trained" || representationSelect.value === "mesh2splat";
   const inTransition = modeSelect.value === "transition";
   const inLodView = modeSelect.value === "gaussian" || modeSelect.value === "both";
   const hasPrepared = Boolean(state.prepared);
-  const isDemoModel = modelSelect.value?.startsWith("demo:");
+  const hasSelectedModel = Boolean(modelSelect.value);
 
   setHint(representationHint, sourceHints[representationSelect.value] ?? "");
-  setHint(trainedHint, usesTrainedPly ? "Builds viewer LODs from one trained .ply." : "Only used for Single trained PLY.", !usesTrainedPly);
-  setHint(convertHint, isDemoModel ? "Mesh2Splat conversion requires a real mesh file." : "Creates a new single trained PLY from the selected mesh.", isDemoModel);
+  setHint(trainedHint, usesSelectedPly ? "Choose exactly one source .ply file; LODs are derived only from that file." : "Only used for a single Gaussian PLY source.", !usesSelectedPly);
+  setHint(convertHint, hasSelectedModel ? "Creates a new single trained PLY from the selected mesh." : "Choose a source model first.", !hasSelectedModel);
   setHint(lodHint, inLodView && hasPrepared ? "Select the loaded Gaussian LOD for Mesh + LOD or Selected Gaussian LOD." : "Disabled in Transition mode because the transition blends LODs automatically.", !(inLodView && hasPrepared));
   setHint(transitionStyleHint, inTransition ? "Controls how mesh and splats are blended during Transition mode." : "Only used in Transition mode.", !inTransition);
   setHint(transitionHint, inTransition ? "Move camera distance through the configured transition range." : "Only used in Transition mode.", !inTransition);
@@ -251,6 +258,46 @@ async function api(path, options = {}) {
     throw new Error(detail);
   }
   return response.json();
+}
+
+async function binaryLodApi(path) {
+  const response = await fetch(path);
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = await response.json();
+      detail = body.detail || detail;
+    } catch {
+      // Keep the HTTP status text when the body is not JSON.
+    }
+    throw new Error(detail);
+  }
+  return decodeBinaryLod(await response.arrayBuffer());
+}
+
+function decodeBinaryLod(buffer) {
+  const view = new DataView(buffer);
+  const count = view.getUint32(0, true);
+  const floatBytes = Float32Array.BYTES_PER_ELEMENT;
+  const expectedBytes = 4 + count * 14 * floatBytes;
+  if (buffer.byteLength !== expectedBytes) {
+    throw new Error(`Invalid binary LOD payload: expected ${expectedBytes} bytes, received ${buffer.byteLength}.`);
+  }
+  let offset = 4;
+  const take = (componentCount) => {
+    const length = count * componentCount;
+    const values = new Float32Array(buffer, offset, length);
+    offset += length * floatBytes;
+    return values;
+  };
+  return {
+    count,
+    xyz: take(3),
+    scale: take(3),
+    color: take(3),
+    opacity: take(1),
+    rotation: take(4),
+  };
 }
 
 function smoothstep(edge0, edge1, x) {
@@ -337,23 +384,42 @@ function denseCutoverTransitionWeights(t, transition) {
   return { mesh: 1 - gaussian, gaussian_lods: lods };
 }
 
-function detailBuildTransitionWeights(t, transition) {
+function detailDensityBand(t, denseCount) {
+  const stops = [
+    { position: 0.68, count: 0 },
+    { position: 0.70, count: Math.min(250000, denseCount) },
+    { position: 0.78, count: Math.min(400000, denseCount) },
+    { position: 0.85, count: Math.min(600000, denseCount) },
+    { position: 1.00, count: denseCount },
+  ];
+  if (t <= stops[0].position) return { lowerCount: 0, upperCount: 0, mix: 0 };
+  for (let index = 1; index < stops.length; index += 1) {
+    const lower = stops[index - 1];
+    const upper = stops[index];
+    if (t <= upper.position) {
+      const position = (t - lower.position) / Math.max(upper.position - lower.position, 1e-6);
+      return { lowerCount: lower.count, upperCount: upper.count, mix: smoothstep(0, 1, position) };
+    }
+  }
+  return { lowerCount: denseCount, upperCount: denseCount, mix: 0 };
+}
+
+function detailBuildTransitionReveal(t, transition) {
   const names = Object.keys(transition.lod_ranges ?? {}).sort((a, b) => lodSortKey(a) - lodSortKey(b));
-  const lods = {};
-  for (const name of names) lods[name] = 0;
-  if (!names.length) return { mesh: 1, gaussian_lods: lods };
+  if (!names.length) return null;
 
-  const detailT = smoothstep(0.08, 0.88, t);
-  const lodPosition = detailT * (names.length - 1);
-  const lowerIndex = Math.floor(lodPosition);
-  const upperIndex = Math.min(names.length - 1, lowerIndex + 1);
-  const mix = lodPosition - lowerIndex;
-  const strength = smoothstep(0.05, 0.32, t);
-  lods[names[lowerIndex]] += strength * (1 - mix);
-  lods[names[upperIndex]] += strength * mix;
-
-  const mesh = 1 - smoothstep(0.88, 0.98, t);
-  return { mesh, gaussian_lods: lods };
+  const denseName = names.at(-1);
+  const denseCount = Number(denseName);
+  const band = detailDensityBand(t, denseCount);
+  return {
+    mesh: 1 - smoothstep(0.90, 1.0, t),
+    strength: smoothstep(0.68, 0.72, t),
+    lowerCount: band.lowerCount,
+    upperCount: band.upperCount,
+    mix: band.mix,
+    denseName,
+    denseCount,
+  };
 }
 
 function applyBackgroundTheme() {
@@ -540,7 +606,8 @@ function setTransitionControlsEnabled(enabled) {
 }
 
 function shouldAutoLockCamera() {
-  return state.prepared?.representation === "trained" && (modeSelect.value === "gaussian" || modeSelect.value === "both");
+  return (state.prepared?.representation === "trained" || state.prepared?.representation === "mesh2splat")
+    && (modeSelect.value === "gaussian" || modeSelect.value === "both");
 }
 
 function applyControlsLockState() {
@@ -602,6 +669,11 @@ function gaussianGlobalYOffset() {
   return Number.isFinite(offset) ? offset : 0;
 }
 
+function resetGaussianTransformOverrides() {
+  gaussianScale.value = "1";
+  gaussianYOffset.value = "0";
+}
+
 function applyGaussianTransform(object) {
   if (!object) return;
   object.userData.yOffset = gaussianGlobalYOffset();
@@ -629,6 +701,11 @@ function applyGaussianMaterial(object, opacityValue = Number(opacity.value)) {
   if (!object) return;
   applyGaussianTransform(object);
   object.opacityMultiplier = Math.max(0, Math.min(1, Number(opacityValue) || 0));
+}
+
+function applyGaussianReveal(object, reveal = null) {
+  if (!object) return;
+  object.reveal = reveal;
 }
 
 function drawRawGaussianLayer() {
@@ -662,10 +739,24 @@ async function getLod(count) {
   const key = `${state.preparedId}:${count}`;
   let lod = state.lodCache.get(key);
   if (!lod) {
-    lod = await api(`/api/model/${state.preparedId}/lod/${count}`);
+    setStatus(`Loading Gaussian LOD ${count} on demand...`);
+    lod = await binaryLodApi(`/api/model/${state.preparedId}/lod/${count}/binary`);
     state.lodCache.set(key, lod);
+    const metadata = state.prepared?.lods?.find((item) => String(item.name) === String(count));
+    if (metadata) {
+      metadata.loaded = true;
+      metadata.count = lod.count;
+      updateLodOptionText(metadata);
+    }
   }
   return lod;
+}
+
+function updateLodOptionText(lod) {
+  const option = [...lodSelect.options].find((item) => item.value === String(lod.name));
+  if (!option) return;
+  const availability = lod.loaded ? "loaded" : "loads on demand";
+  option.textContent = `${lod.name.toLocaleString?.() ?? lod.name} target / ${lod.count.toLocaleString()} splats (${availability})`;
 }
 
 function currentTransitionViewKey() {
@@ -681,27 +772,34 @@ function currentSortViewMatrix() {
   return state.transitionViewLock?.viewMatrix ?? state.autoSortView?.viewMatrix ?? null;
 }
 
-function sortedLodForCurrentView(lod) {
-  const viewMatrix = currentSortViewMatrix();
+function sortedLodForViewMatrix(lod, viewMatrix) {
   if (!viewMatrix) return { lod, sortMs: 0 };
+  const rank = lod.rank ?? Float32Array.from({ length: lod.count }, (_, index) => index);
   const startedAt = performance.now();
   const order = depthSortedOrder(lod.xyz, viewMatrix.elements);
   const sorted = {
     ...lod,
-    xyz: reorderByOrder(lod.xyz, order),
-    color: reorderByOrder(lod.color, order),
-    opacity: reorderByOrder(lod.opacity, order),
-    scale: reorderByOrder(lod.scale, order),
-    rotation: Array.isArray(lod.rotation) ? reorderByOrder(lod.rotation, order) : lod.rotation,
+    xyz: reorderByOrder(lod.xyz, order, 3),
+    color: reorderByOrder(lod.color, order, 3),
+    opacity: reorderByOrder(lod.opacity, order, 1),
+    scale: reorderByOrder(lod.scale, order, 3),
+    rotation: reorderByOrder(lod.rotation, order, 4),
+    rank: reorderByOrder(rank, order, 1),
   };
   return { lod: sorted, sortMs: performance.now() - startedAt };
 }
 
-async function ensureTransitionObject(count) {
+function sortedLodForCurrentView(lod) {
+  return sortedLodForViewMatrix(lod, currentSortViewMatrix());
+}
+
+async function ensureTransitionObject(count, weight = 1) {
   const key = String(count);
   if (state.transitionViewLock || state.autoSortView) {
     const lod = await getLod(key);
-    if (state.transitionViewLock || lod.count <= AUTO_SORT_THRESHOLD) return ensureSortedTransitionObject(key);
+    if (state.transitionViewLock || lod.count <= AUTO_SORT_THRESHOLD || weight >= 0.999) {
+      return ensureSortedTransitionObject(key);
+    }
   }
   let object = state.transitionObjects.get(key);
   if (!object) {
@@ -740,6 +838,21 @@ async function ensureSortedTransitionObject(count) {
   return object;
 }
 
+function detailPreviewLodName(detail) {
+  const available = (state.prepared?.lods ?? [])
+    .map((lod) => String(lod.name))
+    .sort((a, b) => lodSortKey(a) - lodSortKey(b));
+  const preview = available.filter((name) => lodSortKey(name) <= 100000).at(-1);
+  if (detail.upperCount > lodSortKey(preview ?? "0")) return detail.denseName;
+  return preview ?? detail.denseName;
+}
+
+function detailRevealedCount(detail, availableCount) {
+  const full = Math.min(detail.lowerCount, availableCount);
+  const partial = Math.max(0, Math.min(detail.upperCount, availableCount) - full);
+  return Math.round(full + partial * detail.mix);
+}
+
 function pruneStaleAutoSortedObjects() {
   if (state.transitionViewLock || !state.autoSortView) return;
   const suffix = `:${state.autoSortView.key}`;
@@ -752,7 +865,10 @@ function pruneStaleAutoSortedObjects() {
 }
 
 async function prepareAllSortedTransitionObjects() {
-  const lodNames = (state.prepared?.lods ?? []).map((lod) => String(lod.name));
+  const preparedNames = (state.prepared?.lods ?? []).map((lod) => String(lod.name));
+  const lodNames = transitionStyleSelect.value === "detail" && preparedNames.length
+    ? [preparedNames.sort((a, b) => lodSortKey(a) - lodSortKey(b)).at(-1)]
+    : preparedNames;
   if (!lodNames.length) return;
   const startedAt = performance.now();
   for (let index = 0; index < lodNames.length; index += 1) {
@@ -907,18 +1023,17 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
     return;
   }
 
+  const detail = style === "detail" ? detailBuildTransitionReveal(t, state.prepared.viewer.transition) : null;
   const weights = style === "additive"
     ? additiveTransitionWeights(radius, state.prepared.viewer.transition)
     : style === "dense"
       ? denseCutoverTransitionWeights(t, state.prepared.viewer.transition)
-      : style === "detail"
-        ? detailBuildTransitionWeights(t, state.prepared.viewer.transition)
-        : transitionWeights(radius, state.prepared.viewer.transition);
+      : transitionWeights(radius, state.prepared.viewer.transition);
   const visualMeshHold = 1 - smoothstep(0.68, 0.96, t);
   const meshOpacity = style === "additive"
     ? MESH_OPACITY
     : style === "detail"
-      ? weights.mesh
+      ? (detail?.mesh ?? MESH_OPACITY)
       : t >= 0.995
         ? 0
         : Math.max(0.08, MESH_OPACITY * Math.max(weights.mesh, visualMeshHold));
@@ -927,18 +1042,44 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
 
   const activeLines = [
     `Transition: ${Math.round(t * 100)}%`,
-    `Style: ${style === "additive" ? "mesh + added detail" : style === "dense" ? "dense LOD cutover" : style === "detail" ? "detail build-up" : "cross-fade"}`,
+    `Style: ${style === "additive" ? "mesh + added detail" : style === "dense" ? "dense LOD cutover" : style === "detail" ? "detail over mesh" : "cross-fade"}`,
     `Camera distance: ${radius.toFixed(2)}`,
     state.transitionViewLock ? "View: locked, depth-sorted splats" : "View: auto-sorted for current camera",
     `mesh: ${meshOpacity.toFixed(2)}`,
   ];
+  if (detail) {
+    if (detail.strength > 0.001) {
+      const sourceName = state.detailPreviewActive ? detailPreviewLodName(detail) : detail.denseName;
+      const object = await ensureSortedTransitionObject(sourceName);
+      if (requestId !== state.transitionRequestId) return;
+      const sourceCount = Number(sourceName);
+      const revealedCount = detailRevealedCount(detail, sourceCount);
+      applyGaussianReveal(object, {
+        fullCount: Math.min(detail.lowerCount, sourceCount),
+        partialCount: Math.min(detail.upperCount, sourceCount),
+        mix: detail.mix,
+      });
+      object.visible = true;
+      applyGaussianMaterial(object, Number(opacity.value) * detail.strength);
+      activeLines.push(
+        `Detail source: ${state.detailPreviewActive ? "preview" : "quality"} ${sourceName} (sorted, ${object.geometry.instanceCount.toLocaleString()} splats, sort ${(object.userData.sortMs ?? 0).toFixed(0)}ms)`,
+        `Revealed: ${revealedCount.toLocaleString()} / ${detail.denseCount.toLocaleString()} splats`,
+      );
+    } else {
+      activeLines.push("Detail source: hidden until Gaussian build-up begins");
+    }
+    transitionValue.textContent = `${Math.round(t * 100)}%`;
+    setStatus(activeLines.join("\n"));
+    return;
+  }
   const activePromises = [];
   const activeObjects = [];
   for (const [count, weight] of Object.entries(weights.gaussian_lods)) {
     if (weight > 0.001) {
       activePromises.push(
-        ensureTransitionObject(count).then((object) => {
+        ensureTransitionObject(count, weight).then((object) => {
           if (requestId !== state.transitionRequestId) return;
+          applyGaussianReveal(object);
           object.visible = true;
           applyGaussianMaterial(object, Number(opacity.value) * weight);
           activeObjects.push({ count, weight, object });
@@ -992,6 +1133,7 @@ function updateVisibility() {
 
 async function updateMode() {
   if (state.busy) return;
+  state.selectedLodRequestId += 1;
   if (!state.preparedId) {
     updateVisibility();
     return;
@@ -1003,42 +1145,60 @@ async function updateMode() {
   updateVisibility();
 }
 
-async function loadModels() {
+async function loadModels({ preserveSelection = false } = {}) {
+  const previousModel = preserveSelection ? modelSelect.value : "";
   const data = await api("/api/models");
   modelSelect.innerHTML = "";
-  for (const model of data.models) {
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "Select a source model";
+  modelSelect.appendChild(none);
+  for (const model of data.models.filter((item) => !item.id.startsWith("demo:"))) {
     const option = document.createElement("option");
     option.value = model.id;
     option.textContent = model.name;
     modelSelect.appendChild(option);
   }
-  setStatus(`Found ${data.models.length} model option(s).`);
+  modelSelect.value = [...modelSelect.options].some((option) => option.value === previousModel) ? previousModel : "";
+  setStatus(`Found ${modelSelect.options.length - 1} source model option(s). Select a model to begin.`);
   updateControlAvailability();
 }
 
-async function loadTrainedGaussians({ preserveRepresentation = false } = {}) {
-  const previousRepresentation = representationSelect.value;
-  const data = await api("/api/trained-gaussians");
-  const lodSetData = await api("/api/mesh2splat-lod-sets");
-  trainedSelect.innerHTML = "";
+function updateGaussianSourceOptions() {
+  const representation = representationSelect.value;
+  const models = state.gaussianSources[representation] ?? [];
+  const previousValue = gaussianSelect.value;
+  gaussianSelect.innerHTML = "";
   const none = document.createElement("option");
   none.value = "";
-  none.textContent = data.models.length ? "Auto match by mesh name" : "No single trained .ply found";
-  trainedSelect.appendChild(none);
-  for (const model of data.models) {
+  none.textContent = representation === "trained" ? "Auto match by mesh name" : "Select one Gaussian .ply file";
+  gaussianSelect.appendChild(none);
+  for (const model of models) {
     const option = document.createElement("option");
     option.value = model.id;
     option.textContent = model.name;
-    trainedSelect.appendChild(option);
+    gaussianSelect.appendChild(option);
   }
+  if (models.some((model) => model.id === previousValue)) {
+    gaussianSelect.value = previousValue;
+  }
+}
+
+async function loadGaussianSources({ preserveRepresentation = false } = {}) {
+  const previousRepresentation = representationSelect.value;
+  const trainedData = await api("/api/trained-gaussians");
+  const mesh2splatData = await api("/api/mesh2splat-gaussians");
+  state.gaussianSources.trained = trainedData.models;
+  state.gaussianSources.mesh2splat = mesh2splatData.models;
   if (preserveRepresentation) {
     representationSelect.value = previousRepresentation;
-  } else if (lodSetData.sets.length > 0) {
-    representationSelect.value = "mesh2splat_lods";
-    setStatus(`Found ${lodSetData.sets.length} Mesh2Splat LOD set(s).`);
-  } else if (data.models.length === 0) {
+  } else if (mesh2splatData.models.length > 0) {
+    representationSelect.value = "mesh2splat";
+    setStatus(`Found ${mesh2splatData.models.length} selectable Mesh2Splat .ply file(s).`);
+  } else if (trainedData.models.length === 0) {
     representationSelect.value = "initialized";
   }
+  updateGaussianSourceOptions();
   updateControlAvailability();
 }
 
@@ -1046,8 +1206,8 @@ async function refreshModelLists() {
   if (state.busy) return;
   setBusy(true, "Refreshing model and Gaussian lists...");
   try {
-    await loadModels();
-    await loadTrainedGaussians({ preserveRepresentation: true });
+    await loadModels({ preserveSelection: true });
+    await loadGaussianSources({ preserveRepresentation: true });
     setStatus("Lists refreshed.");
   } catch (error) {
     setStatus(`Refresh failed:\n${error.message}`);
@@ -1058,6 +1218,10 @@ async function refreshModelLists() {
 
 async function prepareSelectedModel() {
   if (state.busy) return;
+  if (!modelSelect.value) {
+    setStatus("Choose a source model before loading a setup.");
+    return;
+  }
   setBusy(true, "Preparing mesh and Gaussian LODs...");
   try {
     const prepared = await api("/api/prepare", {
@@ -1066,8 +1230,8 @@ async function prepareSelectedModel() {
       body: JSON.stringify({
         model_id: modelSelect.value,
         representation: representationSelect.value,
-        trained_ply_id: trainedSelect.value || null,
-        lod_counts: representationSelect.value === "trained" ? DEFAULT_TRAINED_LOD_COUNTS : undefined,
+        trained_ply_id: gaussianSelect.value || null,
+        lod_counts: (representationSelect.value === "trained" || representationSelect.value === "mesh2splat") ? DEFAULT_TRAINED_LOD_COUNTS : undefined,
       }),
     });
     setStatus("Loading mesh and viewer objects...");
@@ -1082,6 +1246,8 @@ async function prepareSelectedModel() {
 async function applyPreparedModel(prepared) {
   setStatus("Clearing previous viewer data...");
   setMeshStatus("");
+  resetGaussianTransformOverrides();
+  state.detailPreviewActive = false;
   state.transitionViewLock = null;
   state.cameraLock.enabled = false;
   state.cameraLock.automatic = false;
@@ -1089,6 +1255,7 @@ async function applyPreparedModel(prepared) {
   applyControlsLockState();
   state.preparedId = prepared.id;
   state.prepared = prepared;
+  state.selectedLodRequestId += 1;
   state.lodCache.clear();
   disposeObject(state.meshObject);
   disposeObject(state.selectedGaussianObject);
@@ -1103,10 +1270,10 @@ async function applyPreparedModel(prepared) {
   for (const lod of prepared.lods) {
     const option = document.createElement("option");
     option.value = lod.name;
-    option.textContent = `${lod.name.toLocaleString?.() ?? lod.name} target / ${lod.count.toLocaleString()} loaded`;
     lodSelect.appendChild(option);
+    updateLodOptionText(lod);
   }
-  if (prepared.representation === "trained" && lodSelect.options.length > 0) {
+  if ((prepared.representation === "trained" || prepared.representation === "mesh2splat") && lodSelect.options.length > 0) {
     lodSelect.selectedIndex = lodSelect.options.length - 1;
   }
 
@@ -1137,10 +1304,11 @@ async function convertSelectedWithMesh2Splat() {
       }),
     });
     representationSelect.value = "trained";
-    await loadTrainedGaussians({ preserveRepresentation: true });
+    await loadGaussianSources({ preserveRepresentation: true });
     representationSelect.value = "trained";
-    const match = [...trainedSelect.options].find((option) => option.textContent && prepared.gaussian_source?.endsWith(option.textContent));
-    if (match) trainedSelect.value = match.value;
+    updateGaussianSourceOptions();
+    const match = [...gaussianSelect.options].find((option) => option.textContent && prepared.gaussian_source?.endsWith(option.textContent));
+    if (match) gaussianSelect.value = match.value;
     await applyPreparedModel(prepared);
     setStatus([
       "Mesh2Splat conversion complete.",
@@ -1163,11 +1331,34 @@ async function loadSelectedLod() {
     await updateTransitionView();
     return;
   }
-  setStatus(`Loading selected LOD ${lodSelect.value}...`);
-  const lod = await getLod(lodSelect.value);
+  const requestId = ++state.selectedLodRequestId;
+  const selectedLod = lodSelect.value;
+  const preparedId = state.preparedId;
+  setStatus(`Loading selected LOD ${selectedLod}...`);
+  const lod = await getLod(selectedLod);
+  if (requestId !== state.selectedLodRequestId || preparedId !== state.preparedId || lodSelect.value !== selectedLod) return;
+  syncCameraLockForMode();
+  let displayLod = lod;
+  let sortedStatus = "";
+  if (state.cameraLock.enabled) {
+    camera.updateMatrixWorld(true);
+    const sorted = sortedLodForViewMatrix(lod, camera.matrixWorldInverse);
+    displayLod = sorted.lod;
+    sortedStatus = `, depth-sorted in ${sorted.sortMs.toFixed(0)}ms`;
+  }
   disposeObject(state.selectedGaussianObject);
-  state.selectedGaussianObject = buildGaussianPoints(lod);
+  state.selectedGaussianObject = buildGaussianPoints(displayLod);
   updateVisibility();
+  setStatus(`Loaded Gaussian LOD ${selectedLod} (${lod.count.toLocaleString()} splats${sortedStatus}).`);
+}
+
+async function initializeLists() {
+  try {
+    await loadModels();
+    await loadGaussianSources();
+  } catch (error) {
+    setStatus(`Failed to load selectable source lists:\n${error.message}\nRestart the server if it was already running before this update.`);
+  }
 }
 
 async function uploadModel() {
@@ -1215,11 +1406,28 @@ convertMesh2SplatButton.addEventListener("click", convertSelectedWithMesh2Splat)
 uploadInput.addEventListener("change", uploadModel);
 lodSelect.addEventListener("change", loadSelectedLod);
 modelSelect.addEventListener("change", updateControlAvailability);
-representationSelect.addEventListener("change", updateControlAvailability);
+representationSelect.addEventListener("change", () => {
+  updateGaussianSourceOptions();
+  updateControlAvailability();
+});
 modeSelect.addEventListener("change", () => updateMode().catch((error) => setStatus(`Mode update failed:\n${error.message}`)));
-transitionStyleSelect.addEventListener("change", updateVisibility);
+transitionStyleSelect.addEventListener("change", () => {
+  state.detailPreviewActive = false;
+  updateVisibility();
+});
 backgroundSelect.addEventListener("change", applyBackgroundTheme);
+transitionSlider.addEventListener("pointerdown", () => {
+  state.detailPreviewActive = transitionStyleSelect.value === "detail";
+});
 transitionSlider.addEventListener("input", () => updateTransitionView({ syncCamera: true, syncSlider: false }).catch((error) => setStatus(`Transition update failed:\n${error.message}`)));
+function finishTransitionSliderPreview() {
+  if (!state.detailPreviewActive) return;
+  state.detailPreviewActive = false;
+  updateTransitionView({ syncCamera: false, syncSlider: false }).catch((error) => setStatus(`Transition update failed:\n${error.message}`));
+}
+transitionSlider.addEventListener("pointerup", finishTransitionSliderPreview);
+transitionSlider.addEventListener("pointercancel", finishTransitionSliderPreview);
+transitionSlider.addEventListener("change", finishTransitionSliderPreview);
 lockTransitionViewButton.addEventListener("click", toggleTransitionViewLock);
 lockCameraButton.addEventListener("click", toggleCameraLock);
 pointSize.addEventListener("input", updatePointMaterial);
@@ -1233,5 +1441,4 @@ applyBackgroundTheme();
 updateTransitionLockUi();
 updateCameraLockUi();
 animate();
-loadModels().catch((error) => setStatus(`Failed to load models:\n${error.message}`));
-loadTrainedGaussians().catch((error) => setStatus(`Failed to load trained Gaussian files:\n${error.message}`));
+initializeLists();

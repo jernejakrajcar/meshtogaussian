@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import struct
 from pathlib import Path
 
 import pytest
@@ -52,10 +53,22 @@ def test_web_serialization_shapes() -> None:
     prepared.mesh = mesh
     serialized = store.serialize_model(prepared)
     lod = store.serialize_lod(prepared, 10)
+    binary = store.serialize_lod_binary(prepared, 10)
     assert len(serialized["mesh"]["vertices"]) == len(mesh.vertices)
     assert serialized["lods"][0]["count"] == 10
     assert len(lod["xyz"]) == 10
     assert len(lod["color"]) == 10
+    count = struct.unpack_from("<I", binary)[0]
+    values = struct.unpack_from(f"<{count * 14}f", binary, 4)
+    expected = [
+        *[item for point in lod["xyz"] for item in point],
+        *[item for scale in lod["scale"] for item in ([scale[0], scale[0], scale[0]] if len(scale) == 1 else scale)],
+        *[item for color in lod["color"] for item in color],
+        *lod["opacity"],
+        *[item for quaternion in (lod["rotation"] or [[1.0, 0.0, 0.0, 0.0]] * count) for item in quaternion],
+    ]
+    assert count == 10
+    assert values == pytest.approx(expected)
 
 
 def test_fastapi_app_import_when_available() -> None:
@@ -185,11 +198,12 @@ def test_fastapi_mesh2splat_conversion_endpoint_uses_trained_pipeline(tmp_path: 
     assert payload["lods"][0]["count"] == 4
 
 
-def test_fastapi_prepare_uses_mesh2splat_lod_set(tmp_path: Path) -> None:
+def test_fastapi_prepare_uses_only_selected_mesh2splat_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("fastapi")
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
     from src.web.app import create_app
+    import src.web.services as web_services
 
     meshes = tmp_path / "meshes"
     lods = tmp_path / "mesh2splats"
@@ -222,19 +236,51 @@ def test_fastapi_prepare_uses_mesh2splat_lod_set(tmp_path: Path) -> None:
             encoding="utf-8",
         )
 
+    loaded_paths = []
+    original_load = web_services.load_trained_gaussian_ply
+
+    def observed_load(path):
+        loaded_paths.append(Path(path).name)
+        return original_load(path)
+
+    monkeypatch.setattr(web_services, "load_trained_gaussian_ply", observed_load)
     client = TestClient(create_app("configs/smoke.yaml", data_dir=tmp_path))
-    sets = client.get("/api/mesh2splat-lod-sets").json()["sets"]
-    assert sets[0]["counts"] == [300, 800]
+    files = client.get("/api/mesh2splat-gaussians").json()["models"]
+    selected_id = next(model["id"] for model in files if model["name"] == "sourdough-trained-800.ply")
     model_id = next(model["id"] for model in client.get("/api/models").json()["models"] if model["name"] == "sourdough.obj")
     response = client.post(
         "/api/prepare",
-        json={"model_id": model_id, "representation": "mesh2splat_lods"},
+        json={"model_id": model_id, "representation": "mesh2splat", "trained_ply_id": selected_id, "lod_counts": [1]},
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["representation"] == "mesh2splat_lods"
-    assert [lod["name"] for lod in payload["lods"]] == ["300", "800"]
-    assert sorted(payload["viewer"]["transition"]["lod_ranges"]) == ["300", "800"]
+    assert payload["representation"] == "mesh2splat"
+    assert payload["gaussian_source"].endswith("sourdough-trained-800.ply")
+    assert [lod["name"] for lod in payload["lods"]] == ["1", "2"]
+    assert loaded_paths == ["sourdough-trained-800.ply"]
+
+    lod_response = client.get(f"/api/model/{payload['id']}/lod/2/binary")
+    assert lod_response.status_code == 200
+    assert lod_response.headers["content-type"] == "application/octet-stream"
+    assert int.from_bytes(lod_response.content[:4], byteorder="little") == 2
+    assert len(lod_response.content) == 4 + 2 * 14 * 4
+    assert loaded_paths == ["sourdough-trained-800.ply"]
+    binary_values = struct.unpack_from("<28f", lod_response.content, 4)
+    normalized_xyz = sorted(
+        tuple(binary_values[index : index + 3])
+        for index in range(0, 6, 3)
+    )
+    expected = 0.5 / (0.5**2 + 0.5**2) ** 0.5
+    assert normalized_xyz[0] == pytest.approx((-expected, -expected, 0.0))
+    assert normalized_xyz[1] == pytest.approx((expected, -expected, 0.0))
+
+    legacy_response = client.post(
+        "/api/prepare",
+        json={"model_id": model_id, "representation": "mesh2splat_lods"},
+    )
+    assert legacy_response.status_code == 400
+    assert "Automatic Mesh2Splat LOD sets are disabled" in legacy_response.json()["detail"]
+    assert loaded_paths == ["sourdough-trained-800.ply"]
 
 
 def test_fastapi_prepare_trained_returns_representation_metadata(tmp_path: Path) -> None:
@@ -300,15 +346,16 @@ def test_frontend_debug_ui_sections_and_hints() -> None:
     assert '<pre id="status">Loading models...</pre>' in html
     assert "Load Selected Setup" in html
     assert "Gaussian data source" in html
-    assert "Mesh2Splat LOD files" in html
+    assert "Single Mesh2Splat PLY" in html
+    assert "Detail over mesh" in html
     assert "Single trained PLY" in html
     assert "Mesh-sampled preview" in html
-    assert "Only used for Single trained PLY." in html
+    assert "Choose exactly one source .ply file." in html
     assert "Only for Transition mode; depth-sorts splats for current camera." in html
     assert "For Gaussian/Both view with trained splats." in html
     assert 'id="gaussianYOffset"' in html
     assert 'id="gaussianScale"' in html
-    assert "splat-render-3-raw-webgl" in main
+    assert "splat-render-13-detail-dense-ramp" in main
     assert 'id="refreshModelsButton"' in html
     assert 'id="lockCameraButton"' in html
     assert "body {" in css
@@ -318,13 +365,40 @@ def test_frontend_debug_ui_sections_and_hints() -> None:
     assert "statusBox.scrollTop = statusBox.scrollHeight" in main
     assert "DEFAULT_TRAINED_LOD_COUNTS" in main
     assert "function applyGaussianTransform(object)" in main
+    assert "function resetGaussianTransformOverrides()" in main
+    assert 'gaussianScale.value = "1"' in main
+    assert "1 - smoothstep(0.90, 1.0, t)" in main
     assert "createRawGaussianRenderer" in main
     assert "new THREE.ShaderMaterial" not in main
     assert "raw_gaussian_renderer.js" in main
     raw_renderer = (root / "web" / "raw_gaussian_renderer.js").read_text(encoding="utf-8")
     assert "drawElementsInstanced" in raw_renderer
     assert "gl.POINTS" not in raw_renderer
+    assert "depth <= 0.05" in raw_renderer
+    assert "aRank" in raw_renderer
+    assert "uRevealEnabled" in raw_renderer
+    assert "detailRevealAlpha" in raw_renderer
     assert "AUTO_SORT_THRESHOLD" in main
+    assert "sortedLodForViewMatrix(lod, camera.matrixWorldInverse)" in main
+    assert "function detailBuildTransitionReveal(t, transition)" in main
+    assert "function detailDensityBand(t, denseCount)" in main
+    assert "{ position: 0.70, count: Math.min(250000, denseCount) }" in main
+    assert "{ position: 0.78, count: Math.min(400000, denseCount) }" in main
+    assert "{ position: 0.85, count: Math.min(600000, denseCount) }" in main
+    assert "strength: smoothstep(0.68, 0.72, t)" in main
+    assert "function detailPreviewLodName(detail)" in main
+    assert "return detail.denseName" in main
+    assert "Detail source:" in main
+    assert 'transitionSlider.addEventListener("pointerdown"' in main
+    assert 'transitionSlider.addEventListener("pointerup", finishTransitionSliderPreview)' in main
+    assert "loads on demand" in main
+    assert "binaryLodApi" in main
+    assert "Loaded Gaussian LOD" in main
+    assert "selectedLodRequestId" in main
+    assert 'none.textContent = "Select a source model"' in main
+    assert '!item.id.startsWith("demo:")' in main
+    assert "initializeLists();" in main
+    assert "Restart the server if it was already running before this update." in main
 
 
 def test_trained_gaussian_dropdown_names_include_parent_folder(tmp_path: Path) -> None:
@@ -367,8 +441,9 @@ def test_frontend_control_state_rules_are_centralized() -> None:
     main = (root / "web" / "main.js").read_text(encoding="utf-8")
 
     assert "function updateControlAvailability()" in main
-    assert 'const usesTrainedPly = representationSelect.value === "trained"' in main
-    assert 'setControlAvailability(trainedSelect, usesTrainedPly, "Only used for Single trained PLY.")' in main
+    assert 'const usesSelectedPly = representationSelect.value === "trained" || representationSelect.value === "mesh2splat"' in main
+    assert 'setControlAvailability(gaussianSelect, usesSelectedPly, "Only used for a single Gaussian PLY source.")' in main
+    assert 'setControlAvailability(prepareButton, hasSelectedModel, "Choose a source model first.")' in main
     assert 'setControlAvailability(transitionStyleSelect, inTransition, "Only used in Transition mode.")' in main
     assert 'setControlAvailability(transitionSlider, inTransition, "Only used in Transition mode.")' in main
     assert "setControlAvailability(lodSelect, hasPrepared && inLodView" in main
@@ -376,9 +451,9 @@ def test_frontend_control_state_rules_are_centralized() -> None:
     assert "setControlAvailability(lockTransitionViewButton, hasPrepared && inTransition" in main
     assert "setControlAvailability(lockCameraButton, hasPrepared && inLodView" in main
     assert "function buildStatusContext()" in main
-    assert 'state.prepared?.representation === "trained"' in main
+    assert 'state.prepared?.representation === "trained" || state.prepared?.representation === "mesh2splat"' in main
     assert 'modeSelect.value === "gaussian" || modeSelect.value === "both"' in main
-    assert 'prepared.representation === "trained"' in main
+    assert 'prepared.representation === "trained" || prepared.representation === "mesh2splat"' in main
     assert "lodSelect.selectedIndex = lodSelect.options.length - 1" in main
     assert "function lockTransitionView()" in main
-    assert 'lod_counts: representationSelect.value === "trained" ? DEFAULT_TRAINED_LOD_COUNTS : undefined' in main
+    assert 'lod_counts: (representationSelect.value === "trained" || representationSelect.value === "mesh2splat") ? DEFAULT_TRAINED_LOD_COUNTS : undefined' in main
