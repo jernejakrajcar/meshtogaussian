@@ -37,7 +37,7 @@ const transitionHint = document.querySelector("#transitionHint");
 const lockTransitionHint = document.querySelector("#lockTransitionHint");
 const lockCameraHint = document.querySelector("#lockCameraHint");
 const uiControls = [...document.querySelectorAll(".sidebar button, .sidebar input, .sidebar select")];
-const APP_VERSION = "splat-render-15-detail-depth-occlusion";
+const APP_VERSION = "splat-render-16-optimized-detail-lod";
 const DEFAULT_TRAINED_LOD_COUNTS = [
   10, 20, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 20000, 50000, 100000,
 ];
@@ -47,6 +47,8 @@ const state = {
   prepared: null,
   meshObject: null,
   selectedGaussianObject: null,
+  optimizedDetailObject: null,
+  optimizedDetailKey: null,
   transitionObjects: new Map(),
   sortedTransitionObjects: new Map(),
   sortedTransitionStats: new Map(),
@@ -469,6 +471,10 @@ function coverageBuildTransitionReveal(t, transition) {
 }
 
 function usesDetailRevealStyle(style) {
+  return style === "detail" || style === "optimized-detail" || style === "coverage";
+}
+
+function usesDenseRevealStyle(style) {
   return style === "detail" || style === "coverage";
 }
 
@@ -531,6 +537,7 @@ function disposeMaterial(material) {
 function allGaussianObjects() {
   const objects = [
     state.selectedGaussianObject,
+    state.optimizedDetailObject,
     ...state.transitionObjects.values(),
     ...state.sortedTransitionObjects.values(),
   ].filter(Boolean);
@@ -538,6 +545,9 @@ function allGaussianObjects() {
 }
 
 function clearTransitionObjects() {
+  disposeObject(state.optimizedDetailObject);
+  state.optimizedDetailObject = null;
+  state.optimizedDetailKey = null;
   for (const object of state.transitionObjects.values()) disposeObject(object);
   state.transitionObjects.clear();
   clearSortedTransitionObjects();
@@ -790,6 +800,7 @@ function hideGaussianObject(object) {
 
 function hideAllGaussians() {
   hideGaussianObject(state.selectedGaussianObject);
+  hideGaussianObject(state.optimizedDetailObject);
   for (const object of state.transitionObjects.values()) hideGaussianObject(object);
   for (const object of allGaussianObjects()) hideGaussianObject(object);
 }
@@ -850,6 +861,61 @@ function sortedLodForViewMatrix(lod, viewMatrix) {
 
 function sortedLodForCurrentView(lod) {
   return sortedLodForViewMatrix(lod, currentSortViewMatrix());
+}
+
+function subsetLod(lod, count) {
+  const nextCount = Math.max(0, Math.min(Number(count) || 0, lod.count));
+  const take = (values, components) => values.slice(0, nextCount * components);
+  return {
+    ...lod,
+    count: nextCount,
+    xyz: take(lod.xyz, 3),
+    scale: take(lod.scale, 3),
+    color: take(lod.color, 3),
+    opacity: take(lod.opacity, 1),
+    rotation: take(lod.rotation, 4),
+    rank: lod.rank ? take(lod.rank, 1) : undefined,
+  };
+}
+
+function optimizedDetailBucketCount(count, denseCount) {
+  if (count <= 0) return 0;
+  const bucket = 2048;
+  return Math.min(denseCount, Math.max(1, Math.ceil(count / bucket) * bucket));
+}
+
+function optimizedDetailSourceName(activeCount) {
+  const names = (state.prepared?.lods ?? [])
+    .map((lod) => String(lod.name))
+    .filter((name) => lodSortKey(name) >= activeCount)
+    .sort((a, b) => lodSortKey(a) - lodSortKey(b));
+  return names[0] ?? String(activeCount);
+}
+
+async function ensureOptimizedDetailObject(activeCount) {
+  const sourceName = optimizedDetailSourceName(activeCount);
+  const key = `${state.preparedId}:${currentTransitionViewKey()}:optimized-detail:${sourceName}:${activeCount}`;
+  if (state.optimizedDetailObject && state.optimizedDetailKey === key) {
+    return { object: state.optimizedDetailObject, sourceName };
+  }
+
+  disposeObject(state.optimizedDetailObject);
+  state.optimizedDetailObject = null;
+  state.optimizedDetailKey = null;
+
+  const sourceLod = await getLod(sourceName);
+  const activeLod = subsetLod(sourceLod, activeCount);
+  const { lod: sortedLod, sortMs } = sortedLodForCurrentView(activeLod);
+  const object = buildGaussianPoints(sortedLod);
+  object.visible = false;
+  object.userData.kind = "gaussian";
+  object.userData.lodCount = String(activeCount);
+  object.userData.sourceLod = sourceName;
+  object.userData.sorted = Boolean(currentSortViewMatrix());
+  object.userData.sortMs = sortMs;
+  state.optimizedDetailObject = object;
+  state.optimizedDetailKey = key;
+  return { object, sourceName };
 }
 
 async function ensureTransitionObject(count, weight = 1) {
@@ -925,7 +991,8 @@ function pruneStaleAutoSortedObjects() {
 
 async function prepareAllSortedTransitionObjects() {
   const preparedNames = (state.prepared?.lods ?? []).map((lod) => String(lod.name));
-  const lodNames = usesDetailRevealStyle(transitionStyleSelect.value) && preparedNames.length
+  if (transitionStyleSelect.value === "optimized-detail") return;
+  const lodNames = usesDenseRevealStyle(transitionStyleSelect.value) && preparedNames.length
     ? [preparedNames.sort((a, b) => lodSortKey(a) - lodSortKey(b)).at(-1)]
     : preparedNames;
   if (!lodNames.length) return;
@@ -1082,7 +1149,7 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
     return;
   }
 
-  const detail = style === "detail"
+  const detail = style === "detail" || style === "optimized-detail"
     ? detailBuildTransitionReveal(t, state.prepared.viewer.transition)
     : style === "coverage"
       ? coverageBuildTransitionReveal(t, state.prepared.viewer.transition)
@@ -1105,7 +1172,7 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
 
   const activeLines = [
     `Transition: ${Math.round(t * 100)}%`,
-    `Style: ${style === "additive" ? "mesh + added detail" : style === "dense" ? "dense LOD cutover" : style === "detail" ? "detail over mesh" : style === "coverage" ? "coverage-scaled detail over mesh" : "cross-fade"}`,
+    `Style: ${style === "additive" ? "mesh + added detail" : style === "dense" ? "dense LOD cutover" : style === "detail" ? "detail over mesh" : style === "optimized-detail" ? "detail over mesh (optimized)" : style === "coverage" ? "coverage-scaled detail over mesh" : "cross-fade"}`,
     `Camera distance: ${radius.toFixed(2)}`,
     state.transitionViewLock ? "View: locked, depth-sorted splats" : "View: auto-sorted for current camera",
     `mesh: ${meshOpacity.toFixed(2)}`,
@@ -1113,23 +1180,42 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
   if (detail) {
     activeLines.push(meshOpacity > 0.001 ? "Depth occlusion: mesh hides rear splats" : "Depth occlusion: off after mesh removal");
     if (detail.strength > 0.001) {
-      const sourceName = state.detailPreviewActive ? detailPreviewLodName(detail) : detail.denseName;
-      const object = await ensureSortedTransitionObject(sourceName);
+      const revealedCount = detailRevealedCount(detail, detail.denseCount);
+      const activeCount = style === "optimized-detail"
+        ? optimizedDetailBucketCount(revealedCount, detail.denseCount)
+        : revealedCount;
+      const sourceName = style === "optimized-detail"
+        ? optimizedDetailSourceName(activeCount)
+        : state.detailPreviewActive ? detailPreviewLodName(detail) : detail.denseName;
+      const objectResult = style === "optimized-detail"
+        ? await ensureOptimizedDetailObject(activeCount)
+        : { object: await ensureSortedTransitionObject(sourceName), sourceName };
+      const object = objectResult.object;
       if (requestId !== state.transitionRequestId) return;
-      const sourceCount = Number(sourceName);
-      const revealedCount = detailRevealedCount(detail, sourceCount);
-      applyGaussianReveal(object, {
-        fullCount: Math.min(detail.lowerCount, sourceCount),
-        partialCount: Math.min(detail.upperCount, sourceCount),
-        mix: detail.mix,
-      });
+      const sourceCount = Number(objectResult.sourceName);
+      if (style === "optimized-detail") {
+        applyGaussianReveal(object);
+      } else {
+        applyGaussianReveal(object, {
+          fullCount: Math.min(detail.lowerCount, sourceCount),
+          partialCount: Math.min(detail.upperCount, sourceCount),
+          mix: detail.mix,
+        });
+      }
       applyGaussianScaleMultiplier(object, detail.scaleMultiplier ?? 1);
       object.visible = true;
       applyGaussianMaterial(object, Number(opacity.value) * detail.strength);
-      activeLines.push(
-        `Detail source: ${state.detailPreviewActive ? "preview" : "quality"} ${sourceName} (sorted, ${object.geometry.instanceCount.toLocaleString()} splats, sort ${(object.userData.sortMs ?? 0).toFixed(0)}ms)`,
-        `Revealed: ${revealedCount.toLocaleString()} / ${detail.denseCount.toLocaleString()} splats`,
-      );
+      if (style === "optimized-detail") {
+        activeLines.push(
+          `Detail source: optimized subset from ${objectResult.sourceName} (${object.geometry.instanceCount.toLocaleString()} drawn splats, sort ${(object.userData.sortMs ?? 0).toFixed(0)}ms)`,
+          `Revealed target: ${revealedCount.toLocaleString()} / ${detail.denseCount.toLocaleString()} splats`,
+        );
+      } else {
+        activeLines.push(
+          `Detail source: ${state.detailPreviewActive ? "preview" : "quality"} ${sourceName} (sorted, ${object.geometry.instanceCount.toLocaleString()} splats, sort ${(object.userData.sortMs ?? 0).toFixed(0)}ms)`,
+          `Revealed: ${revealedCount.toLocaleString()} / ${detail.denseCount.toLocaleString()} splats`,
+        );
+      }
       if (style === "coverage") activeLines.push(`Temporary Gaussian scale: ${(detail.scaleMultiplier ?? 1).toFixed(2)}x`);
     } else {
       activeLines.push("Detail source: hidden until Gaussian build-up begins");
@@ -1455,6 +1541,9 @@ function updatePointMaterial() {
   for (const object of state.transitionObjects.values()) {
     applyGaussianMaterial(object, object.opacityMultiplier);
   }
+  if (state.optimizedDetailObject) {
+    applyGaussianMaterial(state.optimizedDetailObject, state.optimizedDetailObject.opacityMultiplier);
+  }
   for (const object of state.sortedTransitionObjects.values()) {
     applyGaussianMaterial(object, object.opacityMultiplier);
   }
@@ -1486,7 +1575,7 @@ transitionStyleSelect.addEventListener("change", () => {
 });
 backgroundSelect.addEventListener("change", applyBackgroundTheme);
 transitionSlider.addEventListener("pointerdown", () => {
-  state.detailPreviewActive = usesDetailRevealStyle(transitionStyleSelect.value);
+  state.detailPreviewActive = usesDenseRevealStyle(transitionStyleSelect.value);
 });
 transitionSlider.addEventListener("input", () => updateTransitionView({ syncCamera: true, syncSlider: false }).catch((error) => setStatus(`Transition update failed:\n${error.message}`)));
 function finishTransitionSliderPreview() {
