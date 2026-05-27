@@ -215,9 +215,6 @@ def _importance_spatial_order(
 
     importance = np.clip(opacity, 0.0, 1.0) * np.maximum(scale, 1.0e-6)
     importance = np.nan_to_num(importance, nan=0.0, posinf=0.0, neginf=0.0)
-    if total <= target_count:
-        return np.argsort(-importance, kind="mergesort").astype(np.int64)
-
     candidate_count = min(total, max(target_count * 4, target_count + 128))
     candidate_indices = np.argsort(-importance, kind="mergesort")[:candidate_count]
     candidate_xyz = xyz[candidate_indices]

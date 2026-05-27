@@ -187,6 +187,29 @@ void main() {
 }
 `;
 
+const DEPTH_VERTEX_SHADER = `#version 300 es
+precision highp float;
+
+layout(location = 0) in vec3 aPosition;
+
+uniform mat4 uViewMatrix;
+uniform mat4 uProjectionMatrix;
+
+void main() {
+  gl_Position = uProjectionMatrix * uViewMatrix * vec4(aPosition, 1.0);
+}
+`;
+
+const DEPTH_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+
+out vec4 outColor;
+
+void main() {
+  outColor = vec4(0.0);
+}
+`;
+
 function flattenVec3(values, count, fallback = 0) {
   if (ArrayBuffer.isView(values) && values.length === count * 3) {
     return values instanceof Float32Array ? values : new Float32Array(values);
@@ -327,6 +350,7 @@ function createLayer(gl, lod) {
   return {
     visible: true,
     opacityMultiplier: 1,
+    scaleMultiplier: 1,
     reveal: null,
     geometry: { instanceCount: count },
     userData: { kind: "gaussian" },
@@ -338,12 +362,42 @@ function createLayer(gl, lod) {
   };
 }
 
+function createDepthMesh(gl, mesh) {
+  const vertexCount = ArrayBuffer.isView(mesh.vertices) ? mesh.vertices.length / 3 : mesh.vertices.length;
+  const indices = new Uint32Array(ArrayBuffer.isView(mesh.faces) ? mesh.faces : mesh.faces.flat());
+  const vao = gl.createVertexArray();
+  const positions = gl.createBuffer();
+  const indexBuffer = gl.createBuffer();
+  if (!vao || !positions || !indexBuffer) {
+    throw new Error("Failed to create mesh depth buffers.");
+  }
+
+  gl.bindVertexArray(vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, positions);
+  gl.bufferData(gl.ARRAY_BUFFER, flattenVec3(mesh.vertices, vertexCount), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+
+  return {
+    dispose() {
+      gl.deleteVertexArray(vao);
+      gl.deleteBuffer(positions);
+      gl.deleteBuffer(indexBuffer);
+    },
+    _raw: { vao, indexCount: indices.length },
+  };
+}
+
 export function createRawGaussianRenderer(canvas, options = {}) {
   const gl = canvas.getContext("webgl2", { alpha: true, antialias: false, depth: true, premultipliedAlpha: true });
   if (!gl) throw new Error("WebGL2 is required for raw Gaussian rendering.");
   const maxPointSize = options.maxPointSize ?? 2048;
   const maxGaussianPointSize = Math.min(options.maxGaussianPointSize ?? 2048, maxPointSize);
   const program = createProgram(gl, VERTEX_SHADER, FRAGMENT_SHADER);
+  const depthProgram = createProgram(gl, DEPTH_VERTEX_SHADER, DEPTH_FRAGMENT_SHADER);
   const uniforms = {
     viewMatrix: gl.getUniformLocation(program, "uViewMatrix"),
     projectionMatrix: gl.getUniformLocation(program, "uProjectionMatrix"),
@@ -359,7 +413,12 @@ export function createRawGaussianRenderer(canvas, options = {}) {
     revealPartialCount: gl.getUniformLocation(program, "uRevealPartialCount"),
     revealMix: gl.getUniformLocation(program, "uRevealMix"),
   };
+  const depthUniforms = {
+    viewMatrix: gl.getUniformLocation(depthProgram, "uViewMatrix"),
+    projectionMatrix: gl.getUniformLocation(depthProgram, "uProjectionMatrix"),
+  };
   const layers = new Set();
+  let depthMesh = null;
 
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
@@ -378,6 +437,11 @@ export function createRawGaussianRenderer(canvas, options = {}) {
     layer.dispose();
   }
 
+  function setDepthMesh(mesh) {
+    depthMesh?.dispose();
+    depthMesh = mesh ? createDepthMesh(gl, mesh) : null;
+  }
+
   function setSize(width, height, pixelRatio = 1) {
     const nextWidth = Math.max(1, Math.floor(width * pixelRatio));
     const nextHeight = Math.max(1, Math.floor(height * pixelRatio));
@@ -390,17 +454,48 @@ export function createRawGaussianRenderer(canvas, options = {}) {
     gl.viewport(0, 0, nextWidth, nextHeight);
   }
 
-  function draw({ camera, viewport, opacity = 1, pointScale = 1, gaussianScale = 1, yOffset = 0, clear = true } = {}) {
+  function draw({
+    camera,
+    viewport,
+    opacity = 1,
+    pointScale = 1,
+    gaussianScale = 1,
+    yOffset = 0,
+    meshDepthOcclusion = false,
+    clear = true,
+  } = {}) {
     const width = viewport?.[0] ?? canvas.width;
     const height = viewport?.[1] ?? canvas.height;
     gl.viewport(0, 0, width, height);
     if (clear) gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     if (!camera) return;
+
+    if (meshDepthOcclusion && depthMesh) {
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.LEQUAL);
+      gl.depthMask(true);
+      gl.colorMask(false, false, false, false);
+      gl.enable(gl.POLYGON_OFFSET_FILL);
+      // Move mesh depth slightly away so matching surface splats survive.
+      gl.polygonOffset(1, 4);
+      gl.useProgram(depthProgram);
+      gl.uniformMatrix4fv(depthUniforms.viewMatrix, false, camera.matrixWorldInverse.elements);
+      gl.uniformMatrix4fv(depthUniforms.projectionMatrix, false, camera.projectionMatrix.elements);
+      gl.bindVertexArray(depthMesh._raw.vao);
+      gl.drawElements(gl.TRIANGLES, depthMesh._raw.indexCount, gl.UNSIGNED_INT, 0);
+      gl.bindVertexArray(null);
+      gl.disable(gl.POLYGON_OFFSET_FILL);
+      gl.colorMask(true, true, true, true);
+      gl.depthMask(false);
+    } else {
+      gl.disable(gl.DEPTH_TEST);
+      gl.depthMask(false);
+    }
+
     gl.useProgram(program);
     gl.uniformMatrix4fv(uniforms.viewMatrix, false, camera.matrixWorldInverse.elements);
     gl.uniformMatrix4fv(uniforms.projectionMatrix, false, camera.projectionMatrix.elements);
     gl.uniform1f(uniforms.pointScale, pointScale);
-    gl.uniform1f(uniforms.gaussianScale, gaussianScale);
     gl.uniform1f(uniforms.yOffset, yOffset);
     gl.uniform1f(uniforms.maxPointSize, maxPointSize);
     gl.uniform1f(uniforms.maxGaussianPointSize, maxGaussianPointSize);
@@ -408,6 +503,7 @@ export function createRawGaussianRenderer(canvas, options = {}) {
 
     for (const layer of layers) {
       if (!layer.visible || layer.opacityMultiplier <= 0) continue;
+      gl.uniform1f(uniforms.gaussianScale, gaussianScale * (layer.scaleMultiplier ?? 1));
       gl.uniform1f(uniforms.opacityMultiplier, opacity * layer.opacityMultiplier);
       gl.uniform1f(uniforms.revealEnabled, layer.reveal ? 1 : 0);
       gl.uniform1f(uniforms.revealFullCount, layer.reveal?.fullCount ?? layer._raw.count);
@@ -421,13 +517,17 @@ export function createRawGaussianRenderer(canvas, options = {}) {
 
   function dispose() {
     for (const layer of [...layers]) disposeLayer(layer);
+    depthMesh?.dispose();
+    depthMesh = null;
     gl.deleteProgram(program);
+    gl.deleteProgram(depthProgram);
   }
 
   return {
     uploadScene,
     uploadSorted: uploadScene,
     disposeLayer,
+    setDepthMesh,
     setSize,
     draw,
     dispose,

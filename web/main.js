@@ -37,7 +37,7 @@ const transitionHint = document.querySelector("#transitionHint");
 const lockTransitionHint = document.querySelector("#lockTransitionHint");
 const lockCameraHint = document.querySelector("#lockCameraHint");
 const uiControls = [...document.querySelectorAll(".sidebar button, .sidebar input, .sidebar select")];
-const APP_VERSION = "splat-render-13-detail-dense-ramp";
+const APP_VERSION = "splat-render-15-detail-depth-occlusion";
 const DEFAULT_TRAINED_LOD_COUNTS = [
   10, 20, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 20000, 50000, 100000,
 ];
@@ -107,10 +107,13 @@ const grid = new THREE.GridHelper(2.4, 12, 0x46515c, 0x252c33);
 scene.add(grid);
 
 function setStatus(message) {
+  const followsTail = statusBox.scrollHeight - statusBox.scrollTop - statusBox.clientHeight <= 4;
+  const previousScrollTop = statusBox.scrollTop;
   const context = buildStatusContext();
   const detail = state.meshStatus ? `\n\n${state.meshStatus}` : "";
   statusBox.textContent = `${context}${message ? `\n\n${message}` : ""}${detail}\n\nViewer script: ${APP_VERSION}`;
-  statusBox.scrollTop = statusBox.scrollHeight;
+  if (followsTail) statusBox.scrollTop = statusBox.scrollHeight;
+  else statusBox.scrollTop = previousScrollTop;
 }
 
 function setMeshStatus(message) {
@@ -422,6 +425,53 @@ function detailBuildTransitionReveal(t, transition) {
   };
 }
 
+function coverageDensityBand(t, denseCount) {
+  const stops = [
+    { position: 0.35, count: 0 },
+    { position: 0.44, count: Math.round(denseCount * 0.15) },
+    { position: 0.62, count: Math.round(denseCount * 0.35) },
+    { position: 0.80, count: Math.round(denseCount * 0.65) },
+    { position: 0.94, count: denseCount },
+  ];
+  if (t <= stops[0].position) return { lowerCount: 0, upperCount: 0, mix: 0 };
+  for (let index = 1; index < stops.length; index += 1) {
+    const lower = stops[index - 1];
+    const upper = stops[index];
+    if (t <= upper.position) {
+      const position = (t - lower.position) / Math.max(upper.position - lower.position, 1e-6);
+      return { lowerCount: lower.count, upperCount: upper.count, mix: smoothstep(0, 1, position) };
+    }
+  }
+  return { lowerCount: denseCount, upperCount: denseCount, mix: 0 };
+}
+
+function coverageBuildTransitionReveal(t, transition) {
+  const names = Object.keys(transition.lod_ranges ?? {}).sort((a, b) => lodSortKey(a) - lodSortKey(b));
+  if (!names.length) return null;
+
+  const denseName = names.at(-1);
+  const denseCount = Number(denseName);
+  const band = coverageDensityBand(t, denseCount);
+  const visibleCount = band.lowerCount + (band.upperCount - band.lowerCount) * band.mix;
+  const coverageScale = visibleCount > 0
+    ? Math.min(1.75, Math.max(1, Math.sqrt(denseCount / visibleCount)))
+    : 1.75;
+  return {
+    mesh: 1 - smoothstep(0.94, 1.0, t),
+    strength: t > 0.35 ? 1 : 0,
+    scaleMultiplier: coverageScale,
+    lowerCount: band.lowerCount,
+    upperCount: band.upperCount,
+    mix: band.mix,
+    denseName,
+    denseCount,
+  };
+}
+
+function usesDetailRevealStyle(style) {
+  return style === "detail" || style === "coverage";
+}
+
 function applyBackgroundTheme() {
   const light = backgroundSelect.value === "light";
   scene.background = new THREE.Color(light ? 0xf4f1ea : 0x111418);
@@ -708,10 +758,18 @@ function applyGaussianReveal(object, reveal = null) {
   object.reveal = reveal;
 }
 
+function applyGaussianScaleMultiplier(object, multiplier = 1) {
+  if (!object) return;
+  object.scaleMultiplier = Math.max(1, Number(multiplier) || 1);
+}
+
 function drawRawGaussianLayer() {
   const viewport = rendererViewport();
   const visibleObjects = allGaussianObjects().filter((object) => object.visible && object.opacityMultiplier > 0);
   gaussianCanvas.hidden = visibleObjects.length === 0;
+  const meshDepthOcclusion = modeSelect.value === "transition"
+    && usesDetailRevealStyle(transitionStyleSelect.value)
+    && Boolean(state.meshObject?.visible);
   rawGaussianRenderer.draw({
     camera,
     viewport: [viewport.x, viewport.y],
@@ -719,6 +777,7 @@ function drawRawGaussianLayer() {
     pointScale: gaussianPointScale(),
     gaussianScale: gaussianGlobalScale(),
     yOffset: gaussianGlobalYOffset(),
+    meshDepthOcclusion,
     clear: true,
   });
 }
@@ -866,7 +925,7 @@ function pruneStaleAutoSortedObjects() {
 
 async function prepareAllSortedTransitionObjects() {
   const preparedNames = (state.prepared?.lods ?? []).map((lod) => String(lod.name));
-  const lodNames = transitionStyleSelect.value === "detail" && preparedNames.length
+  const lodNames = usesDetailRevealStyle(transitionStyleSelect.value) && preparedNames.length
     ? [preparedNames.sort((a, b) => lodSortKey(a) - lodSortKey(b)).at(-1)]
     : preparedNames;
   if (!lodNames.length) return;
@@ -1023,7 +1082,11 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
     return;
   }
 
-  const detail = style === "detail" ? detailBuildTransitionReveal(t, state.prepared.viewer.transition) : null;
+  const detail = style === "detail"
+    ? detailBuildTransitionReveal(t, state.prepared.viewer.transition)
+    : style === "coverage"
+      ? coverageBuildTransitionReveal(t, state.prepared.viewer.transition)
+      : null;
   const weights = style === "additive"
     ? additiveTransitionWeights(radius, state.prepared.viewer.transition)
     : style === "dense"
@@ -1032,7 +1095,7 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
   const visualMeshHold = 1 - smoothstep(0.68, 0.96, t);
   const meshOpacity = style === "additive"
     ? MESH_OPACITY
-    : style === "detail"
+    : usesDetailRevealStyle(style)
       ? (detail?.mesh ?? MESH_OPACITY)
       : t >= 0.995
         ? 0
@@ -1042,12 +1105,13 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
 
   const activeLines = [
     `Transition: ${Math.round(t * 100)}%`,
-    `Style: ${style === "additive" ? "mesh + added detail" : style === "dense" ? "dense LOD cutover" : style === "detail" ? "detail over mesh" : "cross-fade"}`,
+    `Style: ${style === "additive" ? "mesh + added detail" : style === "dense" ? "dense LOD cutover" : style === "detail" ? "detail over mesh" : style === "coverage" ? "coverage-scaled detail over mesh" : "cross-fade"}`,
     `Camera distance: ${radius.toFixed(2)}`,
     state.transitionViewLock ? "View: locked, depth-sorted splats" : "View: auto-sorted for current camera",
     `mesh: ${meshOpacity.toFixed(2)}`,
   ];
   if (detail) {
+    activeLines.push(meshOpacity > 0.001 ? "Depth occlusion: mesh hides rear splats" : "Depth occlusion: off after mesh removal");
     if (detail.strength > 0.001) {
       const sourceName = state.detailPreviewActive ? detailPreviewLodName(detail) : detail.denseName;
       const object = await ensureSortedTransitionObject(sourceName);
@@ -1059,12 +1123,14 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
         partialCount: Math.min(detail.upperCount, sourceCount),
         mix: detail.mix,
       });
+      applyGaussianScaleMultiplier(object, detail.scaleMultiplier ?? 1);
       object.visible = true;
       applyGaussianMaterial(object, Number(opacity.value) * detail.strength);
       activeLines.push(
         `Detail source: ${state.detailPreviewActive ? "preview" : "quality"} ${sourceName} (sorted, ${object.geometry.instanceCount.toLocaleString()} splats, sort ${(object.userData.sortMs ?? 0).toFixed(0)}ms)`,
         `Revealed: ${revealedCount.toLocaleString()} / ${detail.denseCount.toLocaleString()} splats`,
       );
+      if (style === "coverage") activeLines.push(`Temporary Gaussian scale: ${(detail.scaleMultiplier ?? 1).toFixed(2)}x`);
     } else {
       activeLines.push("Detail source: hidden until Gaussian build-up begins");
     }
@@ -1080,6 +1146,7 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
         ensureTransitionObject(count, weight).then((object) => {
           if (requestId !== state.transitionRequestId) return;
           applyGaussianReveal(object);
+          applyGaussianScaleMultiplier(object);
           object.visible = true;
           applyGaussianMaterial(object, Number(opacity.value) * weight);
           activeObjects.push({ count, weight, object });
@@ -1260,10 +1327,12 @@ async function applyPreparedModel(prepared) {
   disposeObject(state.meshObject);
   disposeObject(state.selectedGaussianObject);
   clearTransitionObjects();
+  rawGaussianRenderer.setDepthMesh(null);
   updateTransitionLockUi();
   updateCameraLockUi();
   setStatus("Loading source mesh...");
   state.meshObject = await buildSceneMesh(prepared.mesh);
+  rawGaussianRenderer.setDepthMesh(prepared.mesh);
   scene.add(state.meshObject);
 
   lodSelect.innerHTML = "";
@@ -1417,7 +1486,7 @@ transitionStyleSelect.addEventListener("change", () => {
 });
 backgroundSelect.addEventListener("change", applyBackgroundTheme);
 transitionSlider.addEventListener("pointerdown", () => {
-  state.detailPreviewActive = transitionStyleSelect.value === "detail";
+  state.detailPreviewActive = usesDetailRevealStyle(transitionStyleSelect.value);
 });
 transitionSlider.addEventListener("input", () => updateTransitionView({ syncCamera: true, syncSlider: false }).catch((error) => setStatus(`Transition update failed:\n${error.message}`)));
 function finishTransitionSliderPreview() {

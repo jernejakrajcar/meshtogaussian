@@ -154,6 +154,30 @@ def test_trained_lods_are_deterministic_and_nested() -> None:
     assert torch.allclose(first["10"].xyz, first["50"].xyz[:10])
 
 
+def test_full_source_lod_prefix_preserves_spatial_coverage() -> None:
+    xyz = np.concatenate(
+        [np.zeros((32, 3), dtype=np.float32), np.ones((32, 3), dtype=np.float32)],
+        axis=0,
+    )
+    opacity = np.concatenate(
+        [np.full((32, 1), 1.0, dtype=np.float32), np.full((32, 1), 0.1, dtype=np.float32)],
+        axis=0,
+    )
+    cloud = GaussianCloud(
+        xyz=torch.as_tensor(xyz),
+        scale=torch.full((64, 3), 0.02),
+        color=torch.ones((64, 3)),
+        opacity=torch.as_tensor(opacity),
+        name="two-regions",
+    )
+
+    lods = build_trained_lods(cloud, [4, 64])
+    first_positions = lods["4"].xyz.detach().cpu().numpy()[:, 0]
+
+    assert set(first_positions.tolist()) == {0.0, 1.0}
+    assert torch.allclose(lods["4"].xyz, lods["64"].xyz[:4])
+
+
 def test_trained_gaussian_binary_ply_loader(tmp_path: Path) -> None:
     ply = tmp_path / "trained_binary.ply"
     header = "\n".join(

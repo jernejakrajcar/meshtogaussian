@@ -348,6 +348,7 @@ def test_frontend_debug_ui_sections_and_hints() -> None:
     assert "Gaussian data source" in html
     assert "Single Mesh2Splat PLY" in html
     assert "Detail over mesh" in html
+    assert "Coverage-scaled detail over mesh (experimental)" in html
     assert "Single trained PLY" in html
     assert "Mesh-sampled preview" in html
     assert "Choose exactly one source .ply file." in html
@@ -355,7 +356,7 @@ def test_frontend_debug_ui_sections_and_hints() -> None:
     assert "For Gaussian/Both view with trained splats." in html
     assert 'id="gaussianYOffset"' in html
     assert 'id="gaussianScale"' in html
-    assert "splat-render-13-detail-dense-ramp" in main
+    assert "splat-render-15-detail-depth-occlusion" in main
     assert 'id="refreshModelsButton"' in html
     assert 'id="lockCameraButton"' in html
     assert "body {" in css
@@ -363,6 +364,7 @@ def test_frontend_debug_ui_sections_and_hints() -> None:
     assert ".log-panel" in css
     assert "overscroll-behavior: contain;" in css
     assert "statusBox.scrollTop = statusBox.scrollHeight" in main
+    assert "const followsTail = statusBox.scrollHeight - statusBox.scrollTop - statusBox.clientHeight <= 4" in main
     assert "DEFAULT_TRAINED_LOD_COUNTS" in main
     assert "function applyGaussianTransform(object)" in main
     assert "function resetGaussianTransformOverrides()" in main
@@ -378,10 +380,19 @@ def test_frontend_debug_ui_sections_and_hints() -> None:
     assert "aRank" in raw_renderer
     assert "uRevealEnabled" in raw_renderer
     assert "detailRevealAlpha" in raw_renderer
+    assert "function createDepthMesh(gl, mesh)" in raw_renderer
+    assert "meshDepthOcclusion && depthMesh" in raw_renderer
+    assert "gl.polygonOffset(1, 4)" in raw_renderer
     assert "AUTO_SORT_THRESHOLD" in main
     assert "sortedLodForViewMatrix(lod, camera.matrixWorldInverse)" in main
     assert "function detailBuildTransitionReveal(t, transition)" in main
     assert "function detailDensityBand(t, denseCount)" in main
+    assert "function coverageBuildTransitionReveal(t, transition)" in main
+    assert "function coverageDensityBand(t, denseCount)" in main
+    assert "meshDepthOcclusion = modeSelect.value === \"transition\"" in main
+    assert "rawGaussianRenderer.setDepthMesh(prepared.mesh)" in main
+    assert "Depth occlusion: mesh hides rear splats" in main
+    assert "Math.min(1.75, Math.max(1, Math.sqrt(denseCount / visibleCount)))" in main
     assert "{ position: 0.70, count: Math.min(250000, denseCount) }" in main
     assert "{ position: 0.78, count: Math.min(400000, denseCount) }" in main
     assert "{ position: 0.85, count: Math.min(600000, denseCount) }" in main
