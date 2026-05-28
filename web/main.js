@@ -24,6 +24,7 @@ const pointSize = document.querySelector("#pointSize");
 const opacity = document.querySelector("#opacity");
 const gaussianYOffset = document.querySelector("#gaussianYOffset");
 const gaussianScale = document.querySelector("#gaussianScale");
+const gaussianScaleValue = document.querySelector("#gaussianScaleValue");
 const statusBox = document.querySelector("#status");
 const viewer = document.querySelector("#viewer");
 const loadingOverlay = document.querySelector("#loadingOverlay");
@@ -37,7 +38,7 @@ const transitionHint = document.querySelector("#transitionHint");
 const lockTransitionHint = document.querySelector("#lockTransitionHint");
 const lockCameraHint = document.querySelector("#lockCameraHint");
 const uiControls = [...document.querySelectorAll(".sidebar button, .sidebar input, .sidebar select")];
-const APP_VERSION = "splat-render-16-optimized-detail-lod";
+const APP_VERSION = "splat-render-18-optimized-additive";
 const DEFAULT_TRAINED_LOD_COUNTS = [
   10, 20, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 20000, 50000, 100000,
 ];
@@ -471,11 +472,15 @@ function coverageBuildTransitionReveal(t, transition) {
 }
 
 function usesDetailRevealStyle(style) {
-  return style === "detail" || style === "optimized-detail" || style === "coverage";
+  return style === "detail" || style === "optimized-detail" || style === "coverage" || style === "additive";
 }
 
 function usesDenseRevealStyle(style) {
-  return style === "detail" || style === "coverage";
+  return style === "detail";
+}
+
+function usesOptimizedSubsetStyle(style) {
+  return style === "optimized-detail" || style === "coverage" || style === "additive";
 }
 
 function applyBackgroundTheme() {
@@ -724,6 +729,15 @@ function gaussianGlobalScale() {
   return Number.isFinite(scale) ? scale : 1;
 }
 
+function updateGaussianScaleValue(multiplier = 1) {
+  if (!gaussianScaleValue) return;
+  const globalScale = gaussianGlobalScale();
+  const effective = globalScale * Math.max(1, Number(multiplier) || 1);
+  gaussianScaleValue.textContent = multiplier > 1.0001
+    ? `${effective.toFixed(2)}x (${globalScale.toFixed(2)}x manual * ${multiplier.toFixed(2)}x coverage)`
+    : `${globalScale.toFixed(2)}x`;
+}
+
 function gaussianGlobalYOffset() {
   const offset = Number(gaussianYOffset?.value ?? 0);
   return Number.isFinite(offset) ? offset : 0;
@@ -732,6 +746,7 @@ function gaussianGlobalYOffset() {
 function resetGaussianTransformOverrides() {
   gaussianScale.value = "1";
   gaussianYOffset.value = "0";
+  updateGaussianScaleValue();
 }
 
 function applyGaussianTransform(object) {
@@ -978,6 +993,29 @@ function detailRevealedCount(detail, availableCount) {
   return Math.round(full + partial * detail.mix);
 }
 
+function additiveBuildTransitionReveal(distance, transition) {
+  const names = Object.keys(transition.lod_ranges ?? {}).sort((a, b) => lodSortKey(a) - lodSortKey(b));
+  if (!names.length) return null;
+
+  const denseName = names.at(-1);
+  const denseCount = Number(denseName);
+  const weights = additiveTransitionWeights(distance, transition);
+  let weightedCount = 0;
+  for (const [name, weight] of Object.entries(weights.gaussian_lods)) {
+    weightedCount = Math.max(weightedCount, lodSortKey(name) * Math.max(0, Math.min(1, weight)));
+  }
+  return {
+    mesh: 1,
+    strength: weightedCount > 1 ? 1 : 0,
+    scaleMultiplier: 1,
+    lowerCount: Math.round(Math.min(weightedCount, denseCount)),
+    upperCount: Math.round(Math.min(weightedCount, denseCount)),
+    mix: 0,
+    denseName,
+    denseCount,
+  };
+}
+
 function pruneStaleAutoSortedObjects() {
   if (state.transitionViewLock || !state.autoSortView) return;
   const suffix = `:${state.autoSortView.key}`;
@@ -1153,10 +1191,10 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
     ? detailBuildTransitionReveal(t, state.prepared.viewer.transition)
     : style === "coverage"
       ? coverageBuildTransitionReveal(t, state.prepared.viewer.transition)
+      : style === "additive"
+        ? additiveBuildTransitionReveal(radius, state.prepared.viewer.transition)
       : null;
-  const weights = style === "additive"
-    ? additiveTransitionWeights(radius, state.prepared.viewer.transition)
-    : style === "dense"
+  const weights = style === "dense"
       ? denseCutoverTransitionWeights(t, state.prepared.viewer.transition)
       : transitionWeights(radius, state.prepared.viewer.transition);
   const visualMeshHold = 1 - smoothstep(0.68, 0.96, t);
@@ -1170,6 +1208,8 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
   state.meshObject.visible = meshOpacity > 0.001;
   applyMeshOpacity(state.meshObject, meshOpacity);
 
+  updateGaussianScaleValue(detail?.scaleMultiplier ?? 1);
+
   const activeLines = [
     `Transition: ${Math.round(t * 100)}%`,
     `Style: ${style === "additive" ? "mesh + added detail" : style === "dense" ? "dense LOD cutover" : style === "detail" ? "detail over mesh" : style === "optimized-detail" ? "detail over mesh (optimized)" : style === "coverage" ? "coverage-scaled detail over mesh" : "cross-fade"}`,
@@ -1181,19 +1221,19 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
     activeLines.push(meshOpacity > 0.001 ? "Depth occlusion: mesh hides rear splats" : "Depth occlusion: off after mesh removal");
     if (detail.strength > 0.001) {
       const revealedCount = detailRevealedCount(detail, detail.denseCount);
-      const activeCount = style === "optimized-detail"
+      const activeCount = usesOptimizedSubsetStyle(style)
         ? optimizedDetailBucketCount(revealedCount, detail.denseCount)
         : revealedCount;
-      const sourceName = style === "optimized-detail"
+      const sourceName = usesOptimizedSubsetStyle(style)
         ? optimizedDetailSourceName(activeCount)
         : state.detailPreviewActive ? detailPreviewLodName(detail) : detail.denseName;
-      const objectResult = style === "optimized-detail"
+      const objectResult = usesOptimizedSubsetStyle(style)
         ? await ensureOptimizedDetailObject(activeCount)
         : { object: await ensureSortedTransitionObject(sourceName), sourceName };
       const object = objectResult.object;
       if (requestId !== state.transitionRequestId) return;
       const sourceCount = Number(objectResult.sourceName);
-      if (style === "optimized-detail") {
+      if (usesOptimizedSubsetStyle(style)) {
         applyGaussianReveal(object);
       } else {
         applyGaussianReveal(object, {
@@ -1205,10 +1245,10 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
       applyGaussianScaleMultiplier(object, detail.scaleMultiplier ?? 1);
       object.visible = true;
       applyGaussianMaterial(object, Number(opacity.value) * detail.strength);
-      if (style === "optimized-detail") {
+      if (usesOptimizedSubsetStyle(style)) {
         activeLines.push(
           `Detail source: optimized subset from ${objectResult.sourceName} (${object.geometry.instanceCount.toLocaleString()} drawn splats, sort ${(object.userData.sortMs ?? 0).toFixed(0)}ms)`,
-          `Revealed target: ${revealedCount.toLocaleString()} / ${detail.denseCount.toLocaleString()} splats`,
+          `${style === "additive" ? "Added detail target" : "Revealed target"}: ${revealedCount.toLocaleString()} / ${detail.denseCount.toLocaleString()} splats`,
         );
       } else {
         activeLines.push(
@@ -1537,6 +1577,7 @@ async function uploadModel() {
 
 function updatePointMaterial() {
   if (state.busy) return;
+  updateGaussianScaleValue();
   if (state.selectedGaussianObject) applyGaussianMaterial(state.selectedGaussianObject, Number(opacity.value));
   for (const object of state.transitionObjects.values()) {
     applyGaussianMaterial(object, object.opacityMultiplier);
@@ -1596,6 +1637,7 @@ controls.addEventListener("change", scheduleTransitionFromCamera);
 
 resize();
 applyBackgroundTheme();
+updateGaussianScaleValue();
 updateTransitionLockUi();
 updateCameraLockUi();
 animate();

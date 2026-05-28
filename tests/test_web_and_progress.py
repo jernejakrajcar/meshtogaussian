@@ -357,7 +357,8 @@ def test_frontend_debug_ui_sections_and_hints() -> None:
     assert "For Gaussian/Both view with trained splats." in html
     assert 'id="gaussianYOffset"' in html
     assert 'id="gaussianScale"' in html
-    assert "splat-render-16-optimized-detail-lod" in main
+    assert 'id="gaussianScaleValue"' in html
+    assert "splat-render-18-optimized-additive" in main
     assert 'id="refreshModelsButton"' in html
     assert 'id="lockCameraButton"' in html
     assert "body {" in css
@@ -390,6 +391,11 @@ def test_frontend_debug_ui_sections_and_hints() -> None:
     assert "function detailDensityBand(t, denseCount)" in main
     assert "function ensureOptimizedDetailObject(activeCount)" in main
     assert "function subsetLod(lod, count)" in main
+    assert "function usesOptimizedSubsetStyle(style)" in main
+    assert 'return style === "optimized-detail" || style === "coverage" || style === "additive"' in main
+    assert "function additiveBuildTransitionReveal(distance, transition)" in main
+    assert "function updateGaussianScaleValue(multiplier = 1)" in main
+    assert "Added detail target" in main
     assert "optimizedDetailBucketCount(revealedCount, detail.denseCount)" in main
     assert "Detail source: optimized subset from" in main
     assert "function coverageBuildTransitionReveal(t, transition)" in main

@@ -79,40 +79,96 @@ The repository also includes an experimental NVIDIA/CUDA \texttt{gsplat} trainin
 
 \section{Implemented Solution}
 
-The current prototype is centred on a Mesh2Splat workflow.
+The current prototype is centred on an interactive web viewer and a Mesh2Splat workflow.
+A source mesh is loaded in the viewer and one selected Gaussian PLY file is used as the high-detail
+Gaussian representation. The same PLY can come from Mesh2Splat or from the experimental trained-Gaussian path.
 
-In the main workflow, a mesh is converted with Mesh2Splat and several Gaussian PLY files are exported with different splat counts. These files are placed under \texttt{data/mesh2splats/}. The viewer groups them by mesh name and uses the splat count in the filename as the LOD key.
+In the current workflow, the viewer does not require a manually exported PLY file for every level of detail. Instead, it builds a deterministic nested LOD sequence from the selected Gaussian cloud. Smaller LODs are prefixes of the same ordering, and denser LODs contain all splats from coarser LODs. This makes neighbouring LODs spatially related and avoids a common popping artifact where two LODs look like unrelated point sets.
 
-The web viewer then loads the source mesh and the matching Mesh2Splat LOD set. It can also use an initialized preview built from mesh sampling, but this is now mainly a fallback for development and testing rather than the intended final result.
+The viewer contains several transition modes, shown schematically in Figure~\ref{fig:modes}. The most useful current modes are \textbf{Detail over mesh (optimized)}, \textbf{Coverage-scaled detail over mesh}, and \textbf{Keep mesh + add detail}. The older cross-fade, dense cutover, and non-optimized detail modes are kept as baselines and debugging references.
 
-An experimental training script was added for NVIDIA/CUDA machines. It renders synthetic views from a mesh, exports a COLMAP-style dataset, prepares a \texttt{gsplat} training command,
-can run the trainer when \texttt{--run-trainer} is provided, and stores the result under \texttt{data/trained\_gaussians/}. A separate environment check reports whether CUDA-enabled PyTorch and
-the expected \texttt{gsplat} trainer script are available.
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figures/transition_modes.png}
+  \caption{Transition modes exposed by the viewer. Green indicates the mesh contribution and blue indicates the Gaussian contribution.}
+  \label{fig:modes}
+\end{figure}
 
 \subsection{Transition Model}
 
-The transition is controlled by camera distance. A smoothstep function is used for all fades, so weights change gradually instead of linearly snapping at a threshold.
-The mesh weight fades out between configurable far and near distances. The remaining weight budget is assigned to active Gaussian LOD bands and then normalized, so that the combined mesh and Gaussian contribution stays stable.
-
-For the default configuration, the mesh starts fading near distance $3.6$ and is mostly replaced by Gaussian rendering near distance $2.2$ in normalized object units.
-Gaussian LOD bands then progressively select counts such as 10, 100, 500, 5000, and 20000 splats as the camera moves closer.
-
-\subsection{Blending}
-
-The current blend is an image-space weighted sum:
+All transition modes are controlled by camera distance. The viewer maps the current camera radius to a normalized transition parameter
 
 \[
-I = w_m I_m + \sum_i w_i I_i,
+t = \mathrm{clamp}\left(\frac{r_\mathrm{far} - r}{r_\mathrm{far} - r_\mathrm{near}}, 0, 1\right),
 \]
 
-where $I_m$ is the mesh render, $I_i$ are Gaussian LOD renders, and the weights sum to one. This keeps the transition simple and inspectable. It does not yet solve deeper alignment problems such as exact silhouette matching, depth-aware compositing between representations, or learned color correction.
+where $r$ is the distance from the camera to the orbit target. In the default configuration, $r_\mathrm{far}=4.0$ and $r_\mathrm{near}=1.25$ in normalized object units. When the viewer slider is used, it also moves the camera along this far-to-near range, so the slider and camera-distance transition use the same parameter.
+
+For detail-style transitions, $t$ is converted into a target number of active splats. This acts like a continuous LOD factor:
+
+\[
+N_\mathrm{active} = f(t) \, N_\mathrm{total},
+\]
+
+but $f(t)$ is not always a simple linear function. The viewer uses smoothstep ramps and artist-controlled intervals. For example, the optimized detail mode starts revealing splats late in the transition, while the coverage-scaled mode starts earlier and increases Gaussian scale temporarily to hide sparse coverage.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figures/optimized_lod_pipeline.png}
+  \caption{Optimized continuous LOD path. Camera distance is mapped to an active splat count. The viewer chooses a suitable nested LOD, takes a prefix subset, sorts only that subset, and renders only the active splats.}
+  \label{fig:optimized_lod}
+\end{figure}
+
+\subsection{Gaussian LOD Sampling}
+
+The Gaussian LOD sequence is not sampled randomly. The selected Gaussian cloud is sorted once by a deterministic importance and spatial-coverage heuristic. Importance is based on opacity and scale, while spatial distribution is encouraged by assigning candidates to a 3D grid and taking splats from high-scoring occupied regions in a round-robin style. As a result, a small prefix should still cover different parts of the object instead of selecting only the strongest splats from one small area.
+
+The optimized transition modes use this nested order directly. If the transition asks for $N$ active splats, the viewer chooses the smallest prepared LOD that contains at least $N$ splats, then slices the first $N$ entries from that LOD. The count is rounded up to a small bucket size to avoid rebuilding WebGL buffers for every tiny camera movement. This is why the log may show a target such as 307,760 splats but a drawn subset such as 309,248 splats.
+
+This is an important difference from the early implementation. The earlier detail mode uploaded a dense cloud and used a shader reveal mask to hide inactive splats. That was visually continuous, but it still sorted and drew the full cloud. The optimized path uploads and draws only the active subset.
+
+\subsection{Mesh and Gaussian Alignment}
+
+The mesh and Gaussian data must be in the same coordinate system before a transition can look plausible. The source mesh is normalized to a unit sphere for viewer display. For Mesh2Splat PLY files exported from the same source asset, the Gaussian positions and scales are normalized with the same mesh centre and radius. This keeps the two representations in the same object space.
+
+For trained Gaussian files, the code also includes an alignment heuristic. It estimates robust bounds for the mesh and Gaussian cloud, tries signed axis permutations, and chooses the transform with the lowest average nearest-neighbour distance to the mesh sample. Gaussian covariance axes are transformed together with position, so anisotropic splats remain consistently oriented after alignment.
+
+\subsection{Depth-Aware Compositing}
+
+The viewer renders the mesh with Three.js and Gaussian splats with a custom WebGL2 splat renderer. Without additional handling, rear-side splats can be alpha-blended over a visible front mesh surface because the mesh and Gaussian layers do not share a normal depth buffer. This caused visible discontinuities during hybrid transitions.
+
+The current detail-style modes therefore use a depth-aware mask. Before drawing Gaussian splats, the Gaussian renderer draws the mesh geometry invisibly into its own depth buffer. Splats are then rendered with depth testing enabled. Fragments that are behind the front mesh surface fail the depth test, while front/surface splats remain visible. A small polygon offset is used when writing mesh depth so that surface splats are not removed by numerical precision issues.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figures/depth_aware_compositing.png}
+  \caption{Depth-aware compositing. The mesh writes only depth into the Gaussian renderer, then rear splat fragments are rejected by the depth test.}
+  \label{fig:depth}
+\end{figure}
+
+\subsection{Transition Modes}
+
+\textbf{Cross-fade mesh to splats} changes opacity between mesh and Gaussian rendering. It is simple, but the transparency change is visually weak and can show double surfaces. It remains in the viewer as a baseline.
+
+\textbf{Detail over mesh} keeps the mesh visible, then reveals splats from the dense Gaussian cloud. This reduced popping compared to a hard switch, but the first version still uploaded and drew the full dense cloud.
+
+\textbf{Detail over mesh (optimized)} is the best current replacement for the original detail mode. The mesh is held almost until the end of the transition, while an increasing prefix of the nested Gaussian order is rendered over it. Only the active subset is uploaded, sorted, and drawn. The mesh fades out only near the end, after the Gaussian representation is sufficiently dense.
+
+\textbf{Coverage-scaled detail over mesh} uses the same optimized subset rendering as the optimized detail mode, but it starts adding splats earlier. When the active subset is sparse, the Gaussian scale is temporarily increased to cover holes. The scale boost is gradually reduced to $1.0$ as the active splat count approaches the full cloud.
+
+\textbf{Keep mesh + add detail} keeps the mesh fully visible and adds an optimized Gaussian detail subset on top. This mode is useful when the mesh texture is sharper than the Gaussian representation, because it preserves the original mesh appearance while adding Gaussian surface detail. It is also depth-aware, so rear splats do not draw over the mesh.
+
+\textbf{Dense LOD cutover} fades directly to the densest available Gaussian LOD. It is useful as a simple reference, but it is less controlled than the optimized detail modes.
 
 \section{Alternatives Considered}
 
 \textbf{Hard LOD switching} would be simpler, but it directly causes popping and therefore does not satisfy the solution of the problem.
 
-\textbf{Depth-aware screen-space blending} could reduce artifacts where the mesh and Gaussians overlap incorrectly. It is a good future direction, but the first version uses color
-blending because it is easier to debug and works with the current lightweight renderers.
+\textbf{Opacity-only cross-fading} was implemented first because it is easy to inspect, but it makes the transition look like a transparency effect rather than a real LOD change.
+
+\textbf{Shader-only reveal masking} was useful for early experiments because it allowed continuous reveal from a dense cloud. It was later superseded by optimized subset rendering, which avoids drawing inactive splats.
+
+\textbf{Depth-aware screen-space blending} would go further than the current depth mask by blending final images using per-pixel color and depth from both renderers. The implemented depth mask solves the most visible rear-splat-over-mesh artifact, but it is not yet a full image-space composition algorithm.
 
 \textbf{Direct CUDA/gsplat training} was added as an experimental route for generating splats from synthetic training views on an NVIDIA/CUDA machine.
 It was not kept as the main path because it depends on a heavier CUDA, PyTorch, compiler, and training setup.
@@ -121,26 +177,26 @@ It was not kept as the main path because it depends on a heavier CUDA, PyTorch, 
 
 \section{Results}
 
-The prototype currently focuses on the interactive viewer. It loads a source mesh together with Mesh2Splat-exported Gaussian LOD files and displays a continuous transition controlled by camera distance.
+The prototype currently focuses on the interactive viewer. It loads a source mesh together with a selected Gaussian PLY file and displays continuous transition modes controlled by camera distance.
 
-In the current workflow, the exported Mesh2Splat files can contain several LOD sizes, for example a small far-distance splat set and progressively denser near-distance splat sets. The viewer switches between these LOD files proportionally rather than with a single hard switch, so the transition can be inspected with the pipeline slider.
+The three most useful current modes have different trade-offs. \textbf{Detail over mesh (optimized)} gives the cleanest conceptual mesh-to-Gaussian transition because the mesh eventually disappears and the Gaussian representation becomes the final view. \textbf{Coverage-scaled detail over mesh} is better when sparse intermediate splats leave holes, because temporary scale expansion fills coverage gaps. \textbf{Keep mesh + add detail} is visually strong when the original mesh texture is sharper than the Gaussian PLY, because it preserves the mesh while adding Gaussian detail.
 
 The CPU/offline renderer remains useful for validation, but it is no longer presented as the main route for high-quality Gaussian generation.
 The added NVIDIA/CUDA training path can produce trained Gaussian PLY files for the viewer, while GPU rasterization is still outside the current implementation.
 
 \section{Limitations and Future Work}
 
-The largest current limitation is that the practical LOD workflow still depends on externally exported Mesh2Splat PLY files.
-The CUDA/\texttt{gsplat} route adds dataset export and trainer execution support, but it is experimental and depends on an external NVIDIA training environment.
+The largest current limitation is Gaussian close-up quality. In the tested textured plant model, the original textured mesh can look sharper than the Gaussian representation. This is expected in some cases because the mesh displays the original texture directly, while the Gaussian cloud approximates appearance with a finite set of colored splats. The current WebGL renderer is also simpler than a production 3DGS rasterizer, so blur or stripe-like alpha-blending artifacts can appear.
 
-Future work should focus on four improvements: depth-aware blending, better alignment between mesh and Gaussian geometry, quantitative comparison on real assets,
-and a more stable CUDA/\texttt{gsplat} workflow. A later version could also bind Gaussian parameters more directly to mesh surfaces, following the direction suggested by SuGaR and SplattingAvatar.
+The practical workflow still depends on externally exported Mesh2Splat PLY files. The CUDA/\texttt{gsplat} route adds dataset export and trainer execution support, but it is experimental and depends on an external NVIDIA training environment.
+
+Future work should focus on four improvements: better Gaussian export or training quality, a more production-like Gaussian rasterizer, quantitative comparison on real assets, and a more stable CUDA/\texttt{gsplat} workflow. A later version could also bind Gaussian parameters more directly to mesh surfaces, following the direction suggested by SuGaR and SplattingAvatar.
 
 \section{Conclusion}
 
-The implemented prototype demonstrates a clear first step toward seamless mesh-to-Gaussian LOD transitions.
-It does not claim to solve all visual artifacts, but it establishes the key structure: mesh rendering, Mesh2Splat Gaussian LODs, distance-based smooth weights, interactive inspection,
-and an experimental NVIDIA/CUDA training route for trained splats.
+The implemented prototype demonstrates a practical approach to smooth mesh-to-Gaussian LOD transitions. It includes mesh rendering, Mesh2Splat Gaussian input, deterministic nested Gaussian LODs, camera-distance continuous reveal, optimized subset rendering, depth-aware mesh/Gaussian compositing, and multiple transition modes for comparison.
+
+The result is not a perfect seamless renderer, but it establishes the important components needed for the seminar task: gradual distance-based representation changes, spatially related LODs, reduced popping, and an interactive way to compare different transition strategies.
 
 \bibliographystyle{eg-alpha-doi}
 \bibliography{report}
