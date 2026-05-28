@@ -612,6 +612,9 @@ class ModelStore:
         cloud_min, cloud_max = _robust_bounds(cloud_np, weights=weights)
         mesh_center_np = (mesh_min + mesh_max) * 0.5
         cloud_center_np = (cloud_min + cloud_max) * 0.5
+        # Trained PLY files may use a different axis convention than the mesh.
+        # Try signed axis permutations and keep the one that best matches the
+        # normalized mesh sample.
         rotation_np, scale_factor_np = _best_axis_permutation(cloud_np, mesh_np, cloud_center_np, mesh_center_np)
         return GaussianAlignment(
             cloud_center=cloud_center_np.astype(np.float32),

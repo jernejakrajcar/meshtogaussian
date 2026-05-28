@@ -391,6 +391,8 @@ function denseCutoverTransitionWeights(t, transition) {
 }
 
 function detailDensityBand(t, denseCount) {
+  // Reveal the dense splat cloud late: the mesh carries the image until the
+  // Gaussian representation is dense enough to avoid obvious holes.
   const stops = [
     { position: 0.68, count: 0 },
     { position: 0.70, count: Math.min(250000, denseCount) },
@@ -429,6 +431,8 @@ function detailBuildTransitionReveal(t, transition) {
 }
 
 function coverageDensityBand(t, denseCount) {
+  // Coverage mode starts earlier than the normal detail mode. While the subset
+  // is sparse, the renderer temporarily enlarges splats to cover gaps.
   const stops = [
     { position: 0.35, count: 0 },
     { position: 0.44, count: Math.round(denseCount * 0.15) },
@@ -456,6 +460,8 @@ function coverageBuildTransitionReveal(t, transition) {
   const denseCount = Number(denseName);
   const band = coverageDensityBand(t, denseCount);
   const visibleCount = band.lowerCount + (band.upperCount - band.lowerCount) * band.mix;
+  // A square-root scale boost roughly compensates for area coverage when fewer
+  // splats are visible. It is capped so the image does not become too blurry.
   const coverageScale = visibleCount > 0
     ? Math.min(1.75, Math.max(1, Math.sqrt(denseCount / visibleCount)))
     : 1.75;
@@ -879,6 +885,8 @@ function sortedLodForCurrentView(lod) {
 }
 
 function subsetLod(lod, count) {
+  // LODs are nested prefixes of the same ordering, so slicing the first N
+  // splats keeps the sampling deterministic instead of random.
   const nextCount = Math.max(0, Math.min(Number(count) || 0, lod.count));
   const take = (values, components) => values.slice(0, nextCount * components);
   return {
@@ -895,11 +903,15 @@ function subsetLod(lod, count) {
 
 function optimizedDetailBucketCount(count, denseCount) {
   if (count <= 0) return 0;
+  // Rebuild WebGL buffers only at small count steps instead of every tiny
+  // camera movement. This keeps the slider responsive during transition.
   const bucket = 2048;
   return Math.min(denseCount, Math.max(1, Math.ceil(count / bucket) * bucket));
 }
 
 function optimizedDetailSourceName(activeCount) {
+  // Pick the smallest prepared LOD that still contains the active prefix.
+  // This avoids downloading the full dense cloud when a smaller LOD is enough.
   const names = (state.prepared?.lods ?? [])
     .map((lod) => String(lod.name))
     .filter((name) => lodSortKey(name) >= activeCount)
@@ -914,6 +926,8 @@ async function ensureOptimizedDetailObject(activeCount) {
     return { object: state.optimizedDetailObject, sourceName };
   }
 
+  // Only one optimized subset is live at a time. Replacing it avoids keeping
+  // old GPU buffers around while the camera/slider changes.
   disposeObject(state.optimizedDetailObject);
   state.optimizedDetailObject = null;
   state.optimizedDetailKey = null;
@@ -1000,6 +1014,8 @@ function additiveBuildTransitionReveal(distance, transition) {
   const denseName = names.at(-1);
   const denseCount = Number(denseName);
   const weights = additiveTransitionWeights(distance, transition);
+  // Additive mode keeps the mesh fully visible and converts the active LOD
+  // weights into a single optimized splat count.
   let weightedCount = 0;
   for (const [name, weight] of Object.entries(weights.gaussian_lods)) {
     weightedCount = Math.max(weightedCount, lodSortKey(name) * Math.max(0, Math.min(1, weight)));
@@ -1218,6 +1234,9 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
     `mesh: ${meshOpacity.toFixed(2)}`,
   ];
   if (detail) {
+    // Detail-style modes share the same code path: compute an active count,
+    // choose a source LOD, then either reveal from a dense layer or draw only
+    // the optimized active subset.
     activeLines.push(meshOpacity > 0.001 ? "Depth occlusion: mesh hides rear splats" : "Depth occlusion: off after mesh removal");
     if (detail.strength > 0.001) {
       const revealedCount = detailRevealedCount(detail, detail.denseCount);

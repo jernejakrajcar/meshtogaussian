@@ -215,6 +215,8 @@ def _importance_spatial_order(
 
     importance = np.clip(opacity, 0.0, 1.0) * np.maximum(scale, 1.0e-6)
     importance = np.nan_to_num(importance, nan=0.0, posinf=0.0, neginf=0.0)
+    # Use the strongest splats as candidates, but do not simply take the top N:
+    # that can cluster the low LOD in one detailed area and leave holes.
     candidate_count = min(total, max(target_count * 4, target_count + 128))
     candidate_indices = np.argsort(-importance, kind="mergesort")[:candidate_count]
     candidate_xyz = xyz[candidate_indices]
@@ -239,6 +241,9 @@ def _importance_spatial_order(
     selected: set[int] = set()
 
     while len(order) < target_count and active_buckets:
+        # Round-robin through occupied spatial buckets. This keeps early
+        # prefixes spread across the object while still favouring important
+        # splats inside each bucket.
         next_active = []
         for bucket_id in active_buckets:
             cursor = cursors[bucket_id]

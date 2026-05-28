@@ -363,6 +363,8 @@ function createLayer(gl, lod) {
 }
 
 function createDepthMesh(gl, mesh) {
+  // The main mesh is rendered by Three.js on another canvas. For splat/mesh
+  // occlusion we upload a second, depth-only copy into the Gaussian renderer.
   const vertexCount = ArrayBuffer.isView(mesh.vertices) ? mesh.vertices.length / 3 : mesh.vertices.length;
   const indices = new Uint32Array(ArrayBuffer.isView(mesh.faces) ? mesh.faces : mesh.faces.flat());
   const vao = gl.createVertexArray();
@@ -438,6 +440,8 @@ export function createRawGaussianRenderer(canvas, options = {}) {
   }
 
   function setDepthMesh(mesh) {
+    // Called whenever a new source mesh is loaded. Passing null clears the old
+    // depth mask before a replacement model is ready.
     depthMesh?.dispose();
     depthMesh = mesh ? createDepthMesh(gl, mesh) : null;
   }
@@ -471,6 +475,8 @@ export function createRawGaussianRenderer(canvas, options = {}) {
     if (!camera) return;
 
     if (meshDepthOcclusion && depthMesh) {
+      // First fill only the depth buffer with the mesh. The color mask is off,
+      // so the user never sees this helper pass.
       gl.enable(gl.DEPTH_TEST);
       gl.depthFunc(gl.LEQUAL);
       gl.depthMask(true);
@@ -503,6 +509,8 @@ export function createRawGaussianRenderer(canvas, options = {}) {
 
     for (const layer of layers) {
       if (!layer.visible || layer.opacityMultiplier <= 0) continue;
+      // Optimized modes create layers whose instance count is already the
+      // active subset, so drawElementsInstanced only draws visible splats.
       gl.uniform1f(uniforms.gaussianScale, gaussianScale * (layer.scaleMultiplier ?? 1));
       gl.uniform1f(uniforms.opacityMultiplier, opacity * layer.opacityMultiplier);
       gl.uniform1f(uniforms.revealEnabled, layer.reveal ? 1 : 0);
