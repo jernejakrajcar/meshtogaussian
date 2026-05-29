@@ -1,3 +1,8 @@
+"""Osnovni testi za glavni pipeline.
+
+preverja geometrijo, kamere, LOD štetje, mešanje prehodov in kratek CPU smoke test
+"""
+
 from __future__ import annotations
 
 import numpy as np

@@ -1,3 +1,8 @@
+"""Testi za majhne JavaScript funkcije v spletni strani
+
+S temi testi preverimo razvrščanje splattov po globini in formule zapostopno razkrivanje
+"""
+
 from __future__ import annotations
 
 import json

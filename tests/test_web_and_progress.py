@@ -1,3 +1,9 @@
+"""Testi za spletni strežnik, pripravo modelov in prikaz napredka
+
+preverja se, da FastAPI plast pravilno serializira podatke za viewer,
+da izbira prave datoteke in da napake v daljših korakih dobijo razumljivo ime
+"""
+
 from __future__ import annotations
 
 import struct

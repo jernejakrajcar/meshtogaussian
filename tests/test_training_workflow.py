@@ -1,3 +1,9 @@
+"""Testi za del naloge, kjer mesh pretvorimo v učne podatke in Gaussove splatte.
+
+izvoz sintetičnega COLMAP dataseta, branje treniranih PLY datotek,
+poravnavo koordinat in ukaze za gsplat/Mesh2Splat
+"""
+
 from __future__ import annotations
 
 import struct

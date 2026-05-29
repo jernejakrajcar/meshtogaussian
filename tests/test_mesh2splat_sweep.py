@@ -1,3 +1,9 @@
+"""Testi za eksperimentalni sweep parametrov Mesh2Splat
+
+Preverja se, da skripta zna v zagonu zapisati manifest in da metrika
+pokritosti splattov vrača uporabne številke za izbiro gostote.
+"""
+
 from __future__ import annotations
 
 import json
