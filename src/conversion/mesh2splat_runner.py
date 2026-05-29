@@ -1,3 +1,10 @@
+"""Povezava med projektom in zunanjim Mesh2Splat orodjem.
+
+Modul pripravi vhodni mesh, sestavi ukaz, preveri okolje in zapiše manifest,
+da so rezultati pretvorbe sledljivi in uporabni v nadaljnjem LOD prikazu
+Predhodno treba naložiti Mesh2Splat in praivlno popraviti env in ostale skripte da deluje!
+"""
+
 from __future__ import annotations
 
 import json
@@ -54,8 +61,10 @@ class Mesh2SplatResult:
 
 def convert_mesh_to_glb(mesh_path: str | Path, cache_dir: str | Path) -> Path:
     source = Path(mesh_path)
+    # Mesh2Splat najbolje dela z GLB; ce je vhod ze GLB, ga ne pretvarjamo znova
     if source.suffix.lower() == ".glb":
         return source
+    # Pred pretvorbo preverimo format
     if source.suffix.lower() not in SUPPORTED_MESH2SPLAT_INPUTS:
         raise ValueError(f"Unsupported Mesh2Splat input extension: {source.suffix}")
 
@@ -94,6 +103,7 @@ def build_mesh2splat_command(
 def check_mesh2splat_environment(config: Mesh2SplatConfig) -> dict[str, Any]:
     problems: list[str] = []
     executable_found = config.executable.exists() or shutil.which(str(config.executable)) is not None
+    # Zberemo vse probleme v seznam vseh napak
     if not executable_found:
         problems.append(f"Mesh2Splat executable was not found: {config.executable}")
     if config.working_dir is not None and not config.working_dir.exists():
@@ -122,6 +132,7 @@ def convert_mesh_to_gaussians(
     if not source.exists():
         raise FileNotFoundError(f"Input mesh does not exist: {source}")
     status = check_mesh2splat_environment(config)
+    # Pretvorbe ne zacnemo, ce okolje ni ready
     if status["problems"]:
         raise RuntimeError("; ".join(status["problems"]))
 
@@ -142,6 +153,7 @@ def convert_mesh_to_gaussians(
     except subprocess.TimeoutExpired as exc:
         raise TimeoutError(f"Mesh2Splat timed out after {config.timeout_seconds} seconds.") from exc
 
+    # Tudi ob neuspehu zapisemo manifest, da ostane ukaz in stderr za debug.
     if completed.returncode != 0:
         _write_manifest(
             result_dir,
@@ -187,6 +199,8 @@ def _resolve_output_ply(result_dir: Path, expected: Path, timeout_seconds: int) 
         if expected.exists():
             return expected
         candidates = sorted(result_dir.rglob("*.ply"), key=lambda path: path.stat().st_mtime, reverse=True)
+        # Nekatere verzije orodja zapisujejo PLY z drugim imenom, zato vzamemo
+        # najnovejsega v rezultatski mapi, ce pricakovanega imena ni.
         if candidates:
             return candidates[0]
         time.sleep(0.25)
