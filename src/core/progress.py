@@ -1,3 +1,8 @@
+"""Beleženje napredka po fazah pipeline-a
+
+StageLogger daje daljšim korakom ime, trajanje in bolj razumljivo napako
+"""
+
 from __future__ import annotations
 
 from contextlib import contextmanager

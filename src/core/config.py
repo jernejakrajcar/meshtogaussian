@@ -1,3 +1,8 @@
+"""Konfiguracija in osnovna priprava map
+
+Modul za nalganje YAML nastavitve in ustvarja izhodnih folderjov - za bolj urejen pipeline
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
