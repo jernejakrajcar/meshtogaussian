@@ -1,3 +1,9 @@
+"""Metrike za primerjavo renderiranih rezultatov
+
+Vsebuje izračune MSE, PSNR in časovno razliko med frame-i,
+rezultate LOD prehodov prikažemo tudi s številkami.
+"""
+
 from __future__ import annotations
 
 import json

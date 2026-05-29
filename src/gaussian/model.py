@@ -1,3 +1,9 @@
+"""Podatkovni model za oblak Gaussovih splattov.
+
+GaussianCloud na enem mestu hrani položaje, barve, skale, rotacije in prosojnost,
+zato ga lahko uporabljajo rendererji, LOD gradnja in bralniki PLY datotek.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

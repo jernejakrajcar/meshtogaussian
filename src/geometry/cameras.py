@@ -1,3 +1,9 @@
+"""kamere in krožna kamera za sintetične poglede
+
+definira kamere, projekcijske matrike in orbitne pozicije, da lahko
+mesh renderira iz ponovljivih kotov za trening in evaluacijo
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

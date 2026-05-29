@@ -1,3 +1,9 @@
+"""Nalaganje in priprava 3D mesh modelov
+
+skrbi za branje datotek ali demo oblik, normalizacijo na enotno kroglo
+in vzorčenje površine
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -25,12 +31,15 @@ class MeshAsset:
         fallback_color: list[float] | None = None,
         demo_shape: str = "uv_sphere",
     ) -> "MeshAsset":
+        # path=None pomeni, da zazenemo proceduralni demo, kar je uporabno za
+        # testiranje brez zunanjih modelov
         if path is None or str(path).lower() in {"", "none", "null"}:
             return cls.create_demo_shape(demo_shape, color=fallback_color)
 
         try:
             import trimesh  # type: ignore
         except Exception as exc:
+            # Enostaven OBJ fallback obstaja zato, da osnovni projekt deluje tudi brez trimesh
             if Path(path).suffix.lower() == ".obj":
                 return cls._load_simple_obj(Path(path), fallback_color=fallback_color)
             raise RuntimeError(
@@ -39,6 +48,8 @@ class MeshAsset:
             ) from exc
 
         loaded = trimesh.load(Path(path), force="mesh")
+        # GLTF/GLB lahko trimesh vrne kot sceno z vec geometrijami; za ta
+        # pipeline jih zdruzimo v en mesh
         if hasattr(loaded, "geometry"):
             loaded = trimesh.util.concatenate(tuple(loaded.geometry.values()))
 
@@ -81,6 +92,7 @@ class MeshAsset:
     @classmethod
     def create_demo_shape(cls, shape: str, color: list[float] | None = None) -> "MeshAsset":
         shape_key = shape.lower().replace("-", "_")
+        # Podprti samo dve demo obliki
         if shape_key in {"sphere", "uv_sphere"}:
             return cls.create_demo_sphere(color=color)
         if shape_key == "cube":
@@ -93,6 +105,7 @@ class MeshAsset:
         colors = np.tile(default[None, :], (count, 1))
         visual = getattr(mesh, "visual", None)
         vertex_colors = getattr(visual, "vertex_colors", None)
+        # Barve iz datoteke uporabim samo, ce jih je tocno toliko kot vertexov; sicer bi se lahko barve zamaknile glede na geometrijo
         if vertex_colors is not None and len(vertex_colors) == count:
             arr = np.asarray(vertex_colors, dtype=np.float32)
             if arr.shape[1] >= 3:
@@ -107,14 +120,18 @@ class MeshAsset:
         image = getattr(material, "baseColorTexture", None)
         if image is None:
             image = getattr(material, "image", None)
+        # Teksturo uporabimo samo, ko imamo hkrati UV koordinate in sliko za vsak
+        # vertex; delni podatki bi naredili mozen napacen sampling barv
         if raw_uvs is None or image is None or len(raw_uvs) != count:
             return None, None
 
         uvs = np.asarray(raw_uvs, dtype=np.float32)
         texture = np.asarray(image.convert("RGBA") if hasattr(image, "convert") else image, dtype=np.float32)
+        # Ce slika nima vsaj RGB kanalov, je ne morem uporabiti kot barvno teksturo
         if texture.ndim != 3 or texture.shape[2] < 3:
             return None, None
         rgb = texture[:, :, :3] / 255.0
+        # Alfa kanal zmesamo na belo ozadje, da prosojne teksture v synthetic rendererju ne postanejo crne
         if texture.shape[2] >= 4:
             alpha = texture[:, :, 3:4] / 255.0
             rgb = rgb * alpha + (1.0 - alpha)
@@ -214,6 +231,7 @@ class MeshAsset:
         center = (self.vertices.min(axis=0) + self.vertices.max(axis=0)) * 0.5
         self.vertices = self.vertices - center[None, :]
         radius = np.linalg.norm(self.vertices, axis=1).max()
+        # Normalizacija na enotno kroglo poenoti modele razlicnih velikosti, kar poenostavi kamere, prehode in primerjavo z Gaussi
         if radius > 0.0:
             self.vertices = self.vertices / radius
         self.center = center.astype(np.float32)
@@ -230,6 +248,7 @@ class MeshAsset:
         valid = areas > 1.0e-12
         triangles = triangles[valid]
         face_colors = face_colors[valid]
+        # UV-je filtriran z istim maskiranjem kot trikotnike, da barve ostanejo poravnane s povrsinami
         if face_uvs is not None:
             face_uvs = face_uvs[valid]
         face_normals = face_normals[valid]
@@ -237,7 +256,7 @@ class MeshAsset:
         normals = face_normals / np.maximum(np.linalg.norm(face_normals, axis=1, keepdims=True), 1.0e-8)
 
         # Sampling faces proportional to triangle area avoids over-representing
-        # tiny triangles and gives each part of the surface a fair density.
+        # tiny triangles and gives each part of the surface a fair density
         probabilities = areas / areas.sum()
         face_indices = rng.choice(len(triangles), size=n, replace=True, p=probabilities)
         chosen = triangles[face_indices]
@@ -246,6 +265,8 @@ class MeshAsset:
         weights = np.stack([1.0 - r1, r1 * (1.0 - r2), r1 * r2], axis=1)
         points = (chosen * weights[:, :, None]).sum(axis=1)
         colors = face_colors[face_indices].astype(np.float32)
+        # Pri teksturiranem modelu je sampled barva bolj pravilna od povprecja
+        # vertex barv, zato jo izracunamo na izbranih UV koordinatah
         if face_uvs is not None and self.texture_image is not None:
             sampled_uvs = (face_uvs[face_indices] * weights[:, :, None]).sum(axis=1)
             colors = self.sample_texture(sampled_uvs)

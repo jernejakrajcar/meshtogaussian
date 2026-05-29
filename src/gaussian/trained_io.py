@@ -1,3 +1,9 @@
+"""Branje treniranih Gaussov iz PLY datotek.
+
+Modul pretvori izhod gsplat/Mesh2Splat v interno GaussianCloud strukturo in iz
+nje zgradi LOD nivoje za viewer
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -28,6 +34,8 @@ def read_trained_gaussian_count(path: str | Path) -> int:
 def load_trained_gaussian_ply(path: str | Path, device: torch.device | str = "cpu") -> GaussianCloud:
     data = _read_ascii_vertex_ply(path)
     required = {"x", "y", "z"}
+    # Položaji so edina obvezna informacija za GaussianCloud; brez njih PLY ni
+    # uporaben za viewer, tudi ce ima barve ali opacity.
     if not required.issubset(data):
         raise ValueError(f"{path} is missing required Gaussian position fields x/y/z.")
 
@@ -56,6 +64,8 @@ def build_trained_lods(
     opacity = cloud.opacity.detach().cpu().numpy().reshape(-1)
     scale = cloud.scale.detach().cpu().numpy().reshape(-1)
     scale_for_order = cloud.scale.detach().cpu().numpy()
+    # Pri anizotropnih splattih za pomembnost uporabim najvecjo os, ker najbolj
+    # vpliva na vidno pokritost splatta.
     if scale_for_order.ndim == 2:
         scale = scale_for_order.max(axis=1)
     color = cloud.color.detach().cpu().numpy()
@@ -116,6 +126,7 @@ def _read_vertex_ply(path: str | Path) -> dict[str, np.ndarray]:
         if vertex_count <= 0:
             return {name: np.asarray([], dtype=np.float32) for _, name in properties}
 
+        #ASCII in binarni PLY, ker gsplat/Mesh2Splat izvozi niso vedno v isti obliki
         if format_line == "format ascii 1.0":
             values = np.loadtxt(handle, max_rows=vertex_count, dtype=np.float32)
             if values.ndim == 1:
@@ -156,6 +167,8 @@ def _ply_numpy_type(type_name: str) -> str:
 
 
 def _extract_color(data: dict[str, np.ndarray]) -> np.ndarray:
+    # GraphDeco/gsplat barvo pogosto hrani kot prvi SH koeficient, navadni PLY
+    # pa kot red/green/blue. Vrstni red vej odraza ta dva formata.
     if {"f_dc_0", "f_dc_1", "f_dc_2"}.issubset(data):
         sh = np.stack([data["f_dc_0"], data["f_dc_1"], data["f_dc_2"]], axis=1)
         return np.clip(0.5 + SH_C0 * sh, 0.0, 1.0).astype(np.float32)
@@ -167,9 +180,12 @@ def _extract_color(data: dict[str, np.ndarray]) -> np.ndarray:
 
 
 def _extract_opacity(data: dict[str, np.ndarray]) -> np.ndarray:
+    # Ce opacity ni zapisan, uporabi visoko privzeto vrednost, da se oblak v viewerju vseeno vidi
     if "opacity" not in data:
         return np.full((len(data["x"]), 1), 0.9, dtype=np.float32)
     raw = data["opacity"]
+    # Nekateri izvozi ze hranijo opacity v [0, 1]; GraphDeco pa ga hrani kot
+    # logit, zato ga je treba pretvoriti s sigmo.
     if raw.size and float(np.nanmin(raw)) >= 0.0 and float(np.nanmax(raw)) <= 1.0:
         return np.clip(raw[:, None], 0.0, 1.0).astype(np.float32)
     # GraphDeco stores opacity in inverse-sigmoid/logit space.
@@ -179,6 +195,7 @@ def _extract_opacity(data: dict[str, np.ndarray]) -> np.ndarray:
 
 def _extract_scale(data: dict[str, np.ndarray]) -> np.ndarray:
     keys = [key for key in ["scale_0", "scale_1", "scale_2"] if key in data]
+    # scale_0..2 je tipicen GraphDeco zapis; negativne mediane pretvorimo z exp.
     if keys:
         raw = np.stack([data[key] for key in keys], axis=1)
         scale_values = np.exp(raw) if float(np.nanmedian(raw)) < 0.0 else raw
@@ -194,6 +211,8 @@ def _extract_scale(data: dict[str, np.ndarray]) -> np.ndarray:
 
 def _extract_rotation(data: dict[str, np.ndarray]) -> np.ndarray | None:
     keys = [key for key in ["rot_0", "rot_1", "rot_2", "rot_3"] if key in data]
+    # Rotacija ni nujna za starejse ali zelo enostavne PLY-je; takrat renderer
+    # uporabi nevtralno orientacijo
     if len(keys) != 4:
         return None
     rotation = np.stack([data[key] for key in keys], axis=1).astype(np.float32)
@@ -210,13 +229,14 @@ def _importance_spatial_order(
 ) -> np.ndarray:
     total = len(xyz)
     target_count = min(max(int(count), 0), total)
+    # Prazen cilj je veljaven za robne primere in lazje testiranje
     if target_count == 0:
         return np.asarray([], dtype=np.int64)
 
     importance = np.clip(opacity, 0.0, 1.0) * np.maximum(scale, 1.0e-6)
     importance = np.nan_to_num(importance, nan=0.0, posinf=0.0, neginf=0.0)
     # Use the strongest splats as candidates, but do not simply take the top N:
-    # that can cluster the low LOD in one detailed area and leave holes.
+    # that can cluster the low LOD in one detailed area and leave holes
     candidate_count = min(total, max(target_count * 4, target_count + 128))
     candidate_indices = np.argsort(-importance, kind="mergesort")[:candidate_count]
     candidate_xyz = xyz[candidate_indices]
@@ -262,6 +282,8 @@ def _importance_spatial_order(
         active_buckets = next_active
 
     if len(order) < target_count:
+        # Ce prostorsko bucketiranje ne napolni cilja, preostanek dopolnim po
+        # pomembnosti, da LOD vseeno doseze zahtevano stevilo splattov
         for index in np.argsort(-importance, kind="mergesort"):
             int_index = int(index)
             if int_index not in selected:

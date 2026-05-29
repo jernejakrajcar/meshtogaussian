@@ -1,3 +1,9 @@
+"""Preprost interni trener Gaussov za demo pipeline.
+
+To ni zamenjava za pravi gsplat trening, ampak simple experiment poenostavitev, ki iz
+vzorčenih mesh točk zgradi GaussianCloud za hitre smoke teste
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,8 +18,7 @@ class GaussianTrainer:
 
     The default software splat renderer prioritizes readability and is not a full
     differentiable Gaussian rasterizer. This class keeps the pipeline API ready
-    for a possible future `gsplat`/CUDA training path without pretending that
-    this is the main project workflow. The current main path uses Mesh2Splat
+    for a possible future `gsplat`/CUDA training path. The current main path uses Mesh2Splat
     exports for practical Gaussian LODs.
     """
 

@@ -1,3 +1,9 @@
+"""Gradnja nivojev lod za Gaussove splatte.
+
+Modul izbira podmnožice splattov, da lahko primerjam goste in
+redke predstavitve istega modela ter izvaja gladke prehode med njimi
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -18,11 +24,12 @@ class GaussianLODBuilder:
 
     def build_nested(self, counts: list[int], device: torch.device | str = "cpu") -> dict[str, GaussianCloud]:
         max_count = max(counts)
+        # Ne moremo zgraditi LOD-a z vec Gaussi, kot je vzorcenih povrsinskih
         if max_count > len(self.points):
             raise ValueError(f"Requested {max_count} Gaussians, but only {len(self.points)} points exist.")
 
         # Every LOD is a prefix of the same farthest-point order, which keeps
-        # coarse and fine levels spatially related and reduces transition pops.
+        # coarse and fine levels spatially related and reduces transition pops
         order = self._farthest_point_order(max_count)
         lods: dict[str, GaussianCloud] = {}
         for count in sorted(counts):
@@ -56,6 +63,7 @@ class GaussianLODBuilder:
         return order
 
     def _estimate_scales(self, xyz: np.ndarray, count: int, max_count: int) -> np.ndarray:
+        # En sam splat nima soseda za oceno razdalje, zato dobi default size
         if len(xyz) <= 1:
             return np.full((len(xyz), 1), 0.18, dtype=np.float32)
 
@@ -66,6 +74,7 @@ class GaussianLODBuilder:
         dist[dist < 1.0e-7] = np.inf
         nearest = np.min(dist, axis=1)
         median = float(np.median(nearest[np.isfinite(nearest)]))
+        # Redkejsi LOD-i dobijo vecjo skalo, da zakrijejo luknje med manj "gostimi" splatti
         relative = (max_count / max(count, 1)) ** (1.0 / 3.0)
         scale = np.maximum(nearest, median) * self.low_lod_scale_boost * relative
         return np.clip(scale[:, None], 0.006, 0.35).astype(np.float32)

@@ -1,3 +1,9 @@
+"""Analiza pokritosti Gaussovih splattov.
+
+Datoteka izračuna razmerje med lokalnimi razdaljami in vidnimi skalami splattov,
+kar pomaga oceniti, ali je pretvorba pregosta, preredka ali vizualno tvegana.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -42,6 +48,7 @@ def analyze_gaussian_coverage(
     xyz = cloud.xyz.detach().cpu().numpy()
     scale = cloud.scale.detach().cpu().numpy()
     visible_scale = _visible_scale(scale)
+    # Za 0 ali 1 splat ni smiselne najblizje sosede, zato so razdalje nic.
     if cloud.count <= 1:
         nn = np.zeros((cloud.count,), dtype=np.float32)
         sampled_scale = visible_scale
@@ -65,12 +72,15 @@ def analyze_gaussian_coverage(
 
 
 def _visible_scale(scale: np.ndarray) -> np.ndarray:
+    # Pri anizotropnih splattih za vidno pokritost vzamem vecjo ekran-relevantno
+    # os, ne najmanjse debeline splatta.
     if scale.ndim == 1 or scale.shape[1] == 1:
         return scale.reshape(-1).astype(np.float32)
     return np.maximum(scale[:, 0], scale[:, 1]).astype(np.float32)
 
 
 def _sample_indices(count: int, sample_count: int, seed: int) -> np.ndarray:
+    # Ce je oblak manjsi od vzorca, ni razloga za nakljucno podvzorcenje.
     if sample_count >= count:
         return np.arange(count, dtype=np.int64)
     rng = np.random.default_rng(seed)
@@ -84,6 +94,7 @@ def _nearest_neighbor_distances(xyz: np.ndarray) -> np.ndarray:
         distances, _ = cKDTree(xyz).query(xyz, k=2)
         return distances[:, 1].astype(np.float32)
     except Exception:
+        # SciPy ni obvezna odvisnost projekta, zato obstaja NumPy fallback za manjse smoke teste.
         return _nearest_neighbor_distances_numpy(xyz)
 
 
@@ -100,6 +111,7 @@ def _nearest_neighbor_distances_numpy(xyz: np.ndarray, chunk_size: int = 2048) -
 
 
 def _percentiles(values: np.ndarray) -> dict[str, float]:
+    # Prazen vhod vrne nicelne metrike, da manifest ostane serializabilen, ga ni treba posebej obravnavati
     if len(values) == 0:
         return {key: 0.0 for key in ["p10", "p50", "p90", "p95", "p99"]}
     return {
@@ -113,6 +125,8 @@ def _percentiles(values: np.ndarray) -> dict[str, float]:
 
 def _coverage_warnings(ratio: np.ndarray, visible_scale: np.ndarray) -> list[str]:
     warnings: list[str] = []
+    # visok nearest-neighbor/scale pomeni, da so razmiki med splatti vecji od njihove vidne velikosti,
+    # zato se lahko pojavijo luknje
     if len(ratio) and float(np.percentile(ratio, 90)) > 2.0:
         warnings.append("High p90 nearest-neighbor/scale ratio; holes may be visible.")
     if len(ratio) and float(np.percentile(ratio, 99)) > 3.0:
