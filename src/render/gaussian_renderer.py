@@ -1,3 +1,9 @@
+"""CPU/PyTorch renderer za Gaussove splatte v testnem pipeline-u
+
+Uporabi se ga za majhne sintetične primere in evalvacijo, kjer je bolj pomembna
+ponovljivost in enostavnost kot pa hitrost pravega GPU viewerja
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -17,6 +23,8 @@ class GaussianRenderer:
     backend: str = "torch"
 
     def render(self, cloud: GaussianCloud, camera: Camera) -> np.ndarray:
+        # Za renderer so dovoljeni samo lokalni fallback backendi
+        # Pravi interaktivni prikaz je locen v web/raw_gaussian_renderer.js.
         if self.backend not in {"torch", "software", "auto"}:
             raise ValueError(f"Unsupported Gaussian backend for this prototype: {self.backend}")
         return self._render_torch(cloud.to(self.device), camera)
@@ -32,6 +40,8 @@ class GaussianRenderer:
         pts_cam = (view @ pts_h.T).T[:, :3]
         z = pts_cam[:, 2]
         visible = z < -0.01
+        # Ce kamera ne vidi nobenega splatta, vrne samo ozadje, da nadaljnje
+        # racunanje ne dela s praznimi tensorji
         if int(visible.sum().item()) == 0:
             return np.tile(np.asarray(self.background, dtype=np.float32)[None, None, :], (height, width, 1))
 
@@ -56,6 +66,8 @@ class GaussianRenderer:
             x = float(px[idx].item())
             y = float(py[idx].item())
             s = float(sigma[idx].item())
+            # Splat izven slike preskoci z robom 3 sigma, ker tam njegov
+            # Gaussov prispevek prakticno izgine.
             if x < -3.0 * s or x > width + 3.0 * s or y < -3.0 * s or y > height + 3.0 * s:
                 continue
 
@@ -64,6 +76,7 @@ class GaussianRenderer:
             max_x = min(width - 1, int(x) + radius)
             min_y = max(0, int(y) - radius)
             max_y = min(height - 1, int(y) + radius)
+            # Po rezanju na meje slike lahko patch postane prazen
             if min_x > max_x or min_y > max_y:
                 continue
 

@@ -1,3 +1,9 @@
+"""Plast za servising visualizer
+
+za iskanje modelov, pripravo mesha in Gaussov, poravnavo koordinat,
+LOD podatke ter varno obdelavo uploadov
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -30,6 +36,7 @@ def is_supported_mesh(path: str | Path) -> bool:
 
 def safe_upload_name(filename: str) -> str:
     raw = Path(filename).name.replace(" ", "_")
+    # Upload omeji na mesh formate
     if not is_supported_mesh(raw):
         raise ValueError(f"Unsupported mesh extension for {filename!r}.")
     return raw
@@ -61,6 +68,9 @@ def _best_axis_permutation(
             scale_factor = np.clip(mesh_extent / cloud_extent, 0.01, 100.0).astype(np.float32)
             transformed_cloud = rotated_cloud * scale_factor[None, :] + mesh_center[None, :]
             score = _mean_nearest_distance(transformed_cloud, mesh_sample)
+            # Izberem osno permutacijo z najmanjso povprecno razdaljo do mesha,
+            # ker razlicna orodja (gsplat, Mesh2Splat, GLB) nimajo vedno iste
+            # orientacije koordinatnih osi
             if score < best_score:
                 best_score = score
                 best_rotation = rotation
@@ -100,9 +110,13 @@ def _robust_bounds(
     values = np.asarray(points, dtype=np.float32)
     finite = np.isfinite(values).all(axis=1)
     values = values[finite]
+    # Ce po filtriranju ni veljavnih tock, vrnemo nevtralne meje namesto NaN,
+    # ker se te meje kasneje uporabljajo za centriranje modela
     if len(values) == 0:
         zeros = np.zeros(3, dtype=np.float32)
         return zeros, zeros
+    # Pri zelo majhnem stevilu tock kvantili niso bolj stabilni od navadnega
+    # min/max, zato tu uporabim enostavnejso mejo
     if len(values) < 20:
         return values.min(axis=0), values.max(axis=0)
 
@@ -113,6 +127,8 @@ def _robust_bounds(
         )
 
     clean_weights = np.asarray(weights, dtype=np.float32).reshape(-1)[finite]
+    # Utezi pridejo iz opacity/scale vrednosti Gaussians -  Ce niso uporabne
+    # pade izracun nazaj na navadne robustne kvantile brez utezi
     if clean_weights.shape[0] != len(values) or not np.isfinite(clean_weights).all() or float(clean_weights.sum()) <= 1.0e-8:
         return (
             np.quantile(values, low, axis=0).astype(np.float32),
@@ -152,6 +168,8 @@ def _quaternion_wxyz_to_matrix(quaternion: np.ndarray) -> np.ndarray:
 def _matrix_to_quaternion_wxyz(matrix: np.ndarray) -> np.ndarray:
     m = np.asarray(matrix, dtype=np.float32)
     trace = float(np.trace(m))
+    # pretvorba matrike v kvaternion ima dve veji: pozitivna sled je
+    # najstabilnejsa, sicer se izbere najvecja diagonalna os
     if trace > 0.0:
         s = math.sqrt(trace + 1.0) * 2.0
         qw = 0.25 * s
@@ -232,6 +250,8 @@ def _transform_gaussian_covariances(
     scale_factor: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     scale_np = np.asarray(scale, dtype=np.float32)
+    # Nekateri PLY izvozi imajo samo eno skalo na splat. Renderer pa pricakuje
+    # tri osi, zato enakomerno skalo razsirimo na xyz
     if scale_np.ndim == 1 or scale_np.shape[1] == 1:
         scale_np = np.repeat(scale_np.reshape(-1, 1), 3, axis=1)
     rotation_np = (
@@ -265,6 +285,8 @@ def _transform_gaussian_covariances(
         eigenvalues, eigenvectors = np.linalg.eigh(transformed_covariance)
         eigenvalues = np.maximum(eigenvalues[:, ::-1], 1.0e-12)
         eigenvectors = eigenvectors[:, :, ::-1]
+        # Lastni vektorji morajo ostati da se rotirajo v desno, drugace bi kvaternion lahko
+        # opisal zrcaljeno orientacijo splatta
         negative_determinant = np.linalg.det(eigenvectors) < 0.0
         eigenvectors[negative_determinant, :, 2] *= -1.0
         transformed_scale[start:end] = np.sqrt(eigenvalues).astype(np.float32)
@@ -417,6 +439,7 @@ class ModelStore:
         with self.logger.stage("web model preparation"):
             source = "generated"
             mesh_path: Path | None = None
+            # Demo model nima datoteke na disku
             if model_id and not model_id.startswith("demo:"):
                 mesh_path = self.id_to_path(model_id)
                 source = str(mesh_path)
@@ -424,8 +447,10 @@ class ModelStore:
             mesh = MeshAsset.load(mesh_path, fallback_color=fallback_color)
             mesh_center, mesh_radius = mesh.normalize_to_unit_sphere()
             gaussian_source = None
+            # Za trained/Mesh2Splat prikaz ne vzorcimo mesha
             if representation in {"trained", "mesh2splat"}:
                 if representation == "mesh2splat":
+                    # uporabnik mora izbrati tocno en PLY, da se ne nalozi napacen rezultat
                     if not trained_ply_id:
                         raise ValueError("Select one Mesh2Splat .ply file before loading the setup.")
                     gaussian_path = self.id_to_mesh2splat_path(trained_ply_id)
@@ -437,12 +462,15 @@ class ModelStore:
                     raise FileNotFoundError(
                         "No trained Gaussian .ply was provided or found. Generate one with train_gaussians_from_mesh.py first."
                     )
+                # Trenirani gsplat PLY se lahko razlikuje po osi in skali, zato
+                # ga pred viewerjem poravnamo z normaliziranim meshem
                 if representation == "trained":
                     trained_cloud = self._align_gaussian_to_normalized_mesh(load_trained_gaussian_ply(gaussian_path), mesh.vertices)
                 trained_counts = sorted({count for count in lod_counts if count < trained_cloud.count} | {trained_cloud.count})
                 lods = build_trained_lods(trained_cloud, trained_counts)
                 gaussian_source = str(gaussian_path)
             else:
+                # init nacin je hiter preview - brez zunanjega treninga
                 points, normals, colors = mesh.sample_surface(max(lod_counts), seed=seed)
                 lods = GaussianLODBuilder(points, normals, colors, seed=seed).build_nested(lod_counts)
                 alignment_reference_key = None
@@ -540,6 +568,7 @@ class ModelStore:
     def _materialize_lod(self, prepared: PreparedModel, key: str) -> GaussianCloud:
         with prepared.materialize_lock:
             item = prepared.lods[key]
+            # Ce je LOD ze v pomnilniku, ga ne beremo znova z diska
             if isinstance(item, GaussianCloud):
                 return item
             if prepared.representation != "mesh2splat_lods":
@@ -551,6 +580,8 @@ class ModelStore:
 
             requested_raw: GaussianCloud | None = None
             if prepared.alignment is None:
+                # Poravnavo izracunamo samo enkrat iz referencnega LOD-a, potem
+                # jo uporabim za vse ostale lazy LOD datoteke istega seta
                 reference = prepared.lods[reference_key]
                 if isinstance(reference, GaussianCloud):
                     reference_raw = reference
@@ -574,6 +605,7 @@ class ModelStore:
 
     @staticmethod
     def _normalize_gaussian_to_mesh(cloud: GaussianCloud, center: np.ndarray, radius: float) -> GaussianCloud:
+        # Nicelni radij bi pomenil pokvarjen ali prazen mesh
         if radius <= 0.0:
             return cloud
         device = cloud.xyz.device
@@ -594,6 +626,7 @@ class ModelStore:
 
     @staticmethod
     def _gaussian_alignment_to_normalized_mesh(cloud: GaussianCloud, mesh_vertices: np.ndarray) -> GaussianAlignment:
+        # Prazen mesh ali oblak nima dovolj informacij za poravnavo - vrnemo identiteto
         if cloud.count <= 0 or len(mesh_vertices) == 0:
             return GaussianAlignment(
                 cloud_center=np.zeros(3, dtype=np.float32),

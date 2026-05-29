@@ -1,3 +1,9 @@
+"""Preprost renderer za sintetične poglede mesha.
+
+Modul iz kamere in mesh točk naredi RGB/depth približek, ki zadostuje za
+študentski pipeline, pripravo učnih slik in hitre teste brez težke grafične scene.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -18,6 +24,8 @@ class SyntheticViewRenderer:
         return [self.render(mesh, camera, outputs=outputs) for camera in cameras]
 
     def render(self, mesh: MeshAsset, camera: Camera, outputs: list[str] | None = None) -> dict[str, np.ndarray]:
+        # Prototip ima samo software renderer; eksplicitna napaka pomaga takoj
+        # ujeti napacen config namesto tihega fallbacka.
         if self.backend not in {"software", "auto"}:
             raise ValueError(f"Unsupported mesh backend for this prototype: {self.backend}")
         outputs = outputs or ["rgb", "depth"]
@@ -41,10 +49,14 @@ class SyntheticViewRenderer:
 
         for face_index in order:
             face = mesh.faces[face_index]
+            # Trikotnik preskocim, ce katerokoli oglisce ni projektirano v
+            # kamero; s tem se izognem pokvarjenim ekran-koordinatam.
             if not np.all(valid[face]):
                 continue
             pts = projected[face]
             z = points_cam[face, 2]
+            # Kamera gleda v negativno z smer, zato so tocke z z >= 0 za kamero
+            # ali preblizu ravnine izreza.
             if np.any(z >= -0.01):
                 continue
 
@@ -87,11 +99,13 @@ class SyntheticViewRenderer:
         max_x = min(width - 1, int(np.ceil(np.max(pts[:, 0]))))
         min_y = max(0, int(np.floor(np.min(pts[:, 1]))))
         max_y = min(height - 1, int(np.ceil(np.max(pts[:, 1]))))
+        # Ce bounding box pade izven slike, trikotnik ne more prispevati piksla.
         if min_x > max_x or min_y > max_y:
             return
 
         a, b, c = pts
         area = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1])
+        # Degenerirani trikotniki nimajo stabilnih baricentričnih uteži.
         if abs(float(area)) < 1.0e-8:
             return
 
@@ -105,6 +119,7 @@ class SyntheticViewRenderer:
                     continue
                 z = w0 * z_values[0] + w1 * z_values[1] + w2 * z_values[2]
                 positive_depth = -z
+                # Depth test ohrani najblizjo povrsino na pikslu.
                 if positive_depth < depth[py, px]:
                     depth[py, px] = positive_depth
                     weights = np.asarray([w0, w1, w2], dtype=np.float32)
@@ -118,6 +133,8 @@ class SyntheticViewRenderer:
         uvs: np.ndarray | None,
         texture: np.ndarray | None,
     ) -> np.ndarray:
+        # Tekstura ima prednost pred vertex barvami, ker bolje predstavlja
+        # pravi GLB/GLTF model; fallback barve so za modele brez tekstur.
         if uvs is not None and texture is not None:
             uv = (uvs * weights[:, None]).sum(axis=0)
             color = SyntheticViewRenderer._sample_texture(texture, uv)

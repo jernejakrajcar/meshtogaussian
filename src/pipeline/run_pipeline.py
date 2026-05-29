@@ -1,3 +1,9 @@
+"""Glavni eksperimentalni pipeline za nalogo mesh-to-gaussian
+
+Datoteka poveže nalaganje mesha, renderiranje sintetičnih pogledov, gradnjo
+Gaussovih LOD nivojev, prehode in evalvacijo, zato je osrednji del tega projekta
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -78,6 +84,8 @@ def build_lods(cfg: dict[str, Any], mesh: MeshAsset, device) -> dict:
 def blend_frame(mesh_rgb: np.ndarray, gaussian_rgbs: dict[str, np.ndarray], weights) -> np.ndarray:
     rgb = weights.mesh * mesh_rgb
     for name, weight in weights.gaussian_lods.items():
+        # Renderiramo in mesamo samo LOD-e, ki imajo dejansko nenicelno utež
+        # Tak prehod ne dela nepotrebnega dela za nevidne nivoje
         if weight > 0.0 and name in gaussian_rgbs:
             rgb = rgb + weight * gaussian_rgbs[name]
     return np.clip(rgb, 0.0, 1.0)
@@ -89,6 +97,8 @@ def save_video(frames: list[np.ndarray], path: Path, fps: int) -> Path:
         imageio.mimsave(path, uint8_frames, fps=fps, macro_block_size=1)
         return path
     except Exception:
+        # Na nekaterih sistemih MP4 kodek ni na voljo; GIF fallback je manj
+        # kakovosten, ampak se vedno omogoči ogled rezultata - samo za test
         gif_path = path.with_suffix(".gif")
         imageio.mimsave(gif_path, uint8_frames, duration=1.0 / max(fps, 1))
         return gif_path
@@ -100,10 +110,12 @@ def apply_overrides(
     demo_shape: str | None = None,
     output_root: str | None = None,
 ) -> dict[str, Any]:
+    # CLI argumenti imajo prednost pred YAML konfiguracijo
     if mesh_path is not None:
         cfg.setdefault("mesh", {})["path"] = None if mesh_path.lower() in {"demo", "none", "null"} else mesh_path
     if demo_shape is not None:
         cfg.setdefault("mesh", {})["demo_shape"] = demo_shape
+        # Ce uporabnik izbere demo obliko in ne poda mesha
         if mesh_path is None:
             cfg.setdefault("mesh", {})["path"] = None
     if output_root is not None:
@@ -160,10 +172,13 @@ def run_pipeline(
 
     with logger.stage("surface sampling and LOD building"):
         lods = build_lods(cfg, mesh, device_info.torch_device)
+        # LOD datoteke shranim samo, ko je to zahtevano
         if cfg.get("outputs", {}).get("save_lods", True):
             for name, lod in logger.iter(lods.items(), "saving LOD files", total=len(lods)):
                 lod.save_npz(output_root / f"lod_{name}.npz")
 
+    # Trening je opcijski, ker osnovni pipeline lahko deluje tudi s
+    # povrsinsko inicializiranimi Gaussi. Vklop je namenjen daljsim poskusom
     if cfg.get("training", {}).get("enabled", False):
         with logger.stage("optional Gaussian refinement"):
             for lod in logger.iter(lods.values(), "training LODs", total=len(lods)):
@@ -187,6 +202,8 @@ def run_pipeline(
 
             gaussian_rgbs = {}
             for name, weight in weights.gaussian_lods.items():
+                # Prag odstrani mikroskopske utezi, ki se vizualno ne poznajo,
+                # lahko pa po nepotrebnem sprozijo renderiranje LOD-a.
                 if weight > 1.0e-5:
                     gaussian_rgbs[name] = gaussian_renderer.render(lods[name], camera)
 
@@ -201,6 +218,8 @@ def run_pipeline(
                 }
             )
 
+            # Frame PNG-je hranim loceno od videa, da se lahko kasneje preveri
+            # posamezen korak prehoda ali pretestira kak deluje
             if cfg.get("outputs", {}).get("save_frames", True):
                 imageio.imwrite(frame_dir / f"frame_{frame_index:04d}.png", (rgb * 255.0).astype(np.uint8))
 

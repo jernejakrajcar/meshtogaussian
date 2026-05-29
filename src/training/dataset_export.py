@@ -1,3 +1,9 @@
+"""Izvoz sintetičnega dataseta v COLMAP obliko
+
+Iz renderiranih slik, kamer in seed točk se naredi mapo, ki jo gsplat razume kot
+training podatke
+"""
+
 from __future__ import annotations
 
 import json

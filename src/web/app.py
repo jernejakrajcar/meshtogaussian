@@ -1,3 +1,9 @@
+"""FastAPI aplikacija za lokalni pregledovalnik rezultatov
+
+definira HTTP endpoint-e za upload, pripravo modela, pretvorbo z
+Mesh2Splat in serviranje datotek za prikaz celotnega pipelina na ui
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -29,6 +35,8 @@ def create_app(config_path: str | Path = "configs/default.yaml", data_dir: str |
     upload_dir = Path(web_cfg.get("upload_dir", "data/source/uploads"))
     trained_dirs = [Path(path) for path in web_cfg.get("trained_dirs", ["data/trained_gaussians"])]
     mesh2splat_lod_dirs = [Path(path) for path in web_cfg.get("mesh2splat_lod_dirs", ["data/mesh2splats"])]
+    # data_dir se uporablja v testih in pri izoliranem zagonu viewerja: vse
+    # vhodne/izhodne mape prestavi pod en koren, da ne mesamo pravih podatkov
     if root is not None:
         source_dirs = [root / "source", root / "meshes"]
         upload_dir = root / "source" / "uploads"
@@ -56,6 +64,8 @@ def create_app(config_path: str | Path = "configs/default.yaml", data_dir: str |
             "transition": cfg.get("transition", {}),
         }
         if payload.get("representation") in {"mesh2splat_lods", "mesh2splat", "trained"}:
+            # Pri pravih/treniranih splattih so LOD stevilke odvisne od PLY-ja,
+            # zato transition range prilagodim dejansko pripravljenim LOD-om
             payload["viewer"]["transition"] = _proportional_transition_for_lods(
                 [str(lod["name"]) for lod in payload.get("lods", [])],
                 cfg.get("transition", {}),
@@ -125,6 +135,8 @@ def create_app(config_path: str | Path = "configs/default.yaml", data_dir: str |
     def convert_mesh2splat(request: dict[str, Any] = Body(default_factory=dict)):
         try:
             model_id = request.get("model_id")
+            # Mesh2Splat potrebuje resnicno mesh datoteko. Proceduralni demo je
+            # dober za preview, ni pa vhod za zunanji exe
             if not model_id or str(model_id).startswith("demo:"):
                 raise ValueError("Mesh2Splat conversion requires a real mesh file, not the procedural demo.")
             mesh_path = store.id_to_path(str(model_id))
@@ -189,6 +201,8 @@ def create_app(config_path: str | Path = "configs/default.yaml", data_dir: str |
                 raise FileNotFoundError("Generated demo models do not have source assets.")
             source_path = Path(prepared.source).resolve()
             requested = (source_path.parent / unquote(asset_path)).resolve()
+            # Dovoli samo datoteke ob originalnem modelu (npr. teksture), da
+            # endpoint ne postane splosen dostop do diska
             if source_path.parent not in [requested, *requested.parents]:
                 raise PermissionError("Source asset path must stay next to the source model.")
             if not requested.exists() or not requested.is_file():
@@ -208,6 +222,8 @@ def _proportional_transition_for_lods(
     near_radius: float,
 ) -> dict[str, Any]:
     counts = sorted(int(name) for name in lod_names if str(name).isdigit())
+    # Ce LOD imena niso numericna, ni pametnega nacina za proporcionalen prehod,
+    # zato ostane osnovna konfiguracija iz YAML-a
     if not counts:
         return base_transition
     mesh_fade_start = float(base_transition.get("mesh_fade_start", far_radius * 0.9))
@@ -215,6 +231,8 @@ def _proportional_transition_for_lods(
     start = mesh_fade_start
     end = max(float(near_radius), 0.05)
     if len(counts) == 1:
+        # Pri enem samem LOD-u ni prehajanja med nivoji, samo med meshem in tem
+        # oblakom splattov
         ranges = {str(counts[0]): [start, end]}
     else:
         step = (start - end) / len(counts)

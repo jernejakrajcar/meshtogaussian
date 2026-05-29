@@ -1,9 +1,16 @@
+"""Logika weights za prehode med meshem in LOD nivoji
+
+Datoteka iz razdalje kamere izračuna gladke uteži, s katerimi lahko v
+viewerju postopno prehaja med različnimi predstavitvami modela
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 
 def smoothstep(edge0: float, edge1: float, x: float) -> float:
+    # Enaki meji bi povzrocili deljenje z nic; takrat funkcija postane oster prag
     if edge0 == edge1:
         return 1.0 if x >= edge1 else 0.0
     t = max(0.0, min(1.0, (x - edge0) / (edge1 - edge0)))
@@ -32,12 +39,16 @@ class LODTransitionController:
         mesh_weight = 1.0 - smoothstep(self.mesh_fade_start, self.mesh_fade_end, distance)
         raw: dict[str, float] = {}
         for name, (far, near) in self.lod_ranges.items():
+            # Vsak LOD ima vstopni in izstopni del, da se pri priblizevanju
+            # kamere postopno zamenja z gostejsim nivojem
             enters = smoothstep(far, near, distance)
             exits = smoothstep(near, near * 0.72, distance) if near > 0.0 else 0.0
             raw[name] = max(0.0, enters * (1.0 - exits))
 
         gaussian_budget = max(0.0, 1.0 - mesh_weight)
         raw_total = sum(raw.values())
+        # Ce noben LOD razpon trenutno ni aktiven, ne pustim slike prazne,
+        # ampak budget preusmerim v najgostejsi LOD
         if raw_total <= 1.0e-8:
             lod_weights = {name: 0.0 for name in self.lod_ranges}
             if gaussian_budget > 0.0 and self.lod_ranges:
