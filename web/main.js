@@ -1,3 +1,8 @@
+/*
+  Glavna skripta za visualizer - UI, nalaganje modelov, Three.js mesh prikaz in gaussian renderer,
+  da se lahko v brskalniku preverja rezultate pipeline-a in prehode med predstavitvami
+*/
+
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
@@ -259,7 +264,7 @@ async function api(path, options = {}) {
       const body = await response.json();
       detail = body.detail || detail;
     } catch {
-      // Keep the HTTP status text when the body is not JSON.
+      // Keep the HTTP status text when the body is not JSON
     }
     throw new Error(detail);
   }
@@ -274,7 +279,7 @@ async function binaryLodApi(path) {
       const body = await response.json();
       detail = body.detail || detail;
     } catch {
-      // Keep the HTTP status text when the body is not JSON.
+      // Keep the HTTP status text when the body is not JSON
     }
     throw new Error(detail);
   }
@@ -319,6 +324,8 @@ function lodSortKey(name) {
 
 function transitionWeights(distance, transition) {
   const meshWeight = 1 - smoothstep(transition.mesh_fade_start ?? 3.6, transition.mesh_fade_end ?? 2.2, distance);
+  // Progressive mode uporablja samo dva sosednja LOD-a naenkrat, zato je prehod
+  // mirnejsi in manj natrpan kot mesanje vseh razponov hkrati.
   if (transition.lod_mode === "progressive") {
     return progressiveTransitionWeights(meshWeight, transition);
   }
@@ -334,6 +341,8 @@ function transitionWeights(distance, transition) {
   const gaussianBudget = Math.max(0, 1 - meshWeight);
   const rawTotal = Object.values(raw).reduce((sum, value) => sum + value, 0);
   const lods = {};
+  // Ce razponi trenutno ne aktivirajo nobenega LOD-a, vseeno dodelim budget
+  // najgostejsemu nivoju, da se v prehodu ne pojavi prazna luknja.
   if (rawTotal <= 1e-8) {
     for (const name of Object.keys(raw)) lods[name] = 0;
     if (gaussianBudget > 0 && Object.keys(raw).length > 0) {
@@ -345,6 +354,7 @@ function transitionWeights(distance, transition) {
   }
 
   const total = meshWeight + Object.values(lods).reduce((sum, value) => sum + value, 0);
+  // Normalizacija drzi vsoto utezi pri 1, kar preprecuje nenadne spremembe svetlosti pri cross-fade prehodu.
   if (total <= 1e-8) return { mesh: 1, gaussian_lods: lods };
   for (const name of Object.keys(lods)) lods[name] /= total;
   return { mesh: meshWeight / total, gaussian_lods: lods };
@@ -354,9 +364,11 @@ function progressiveTransitionWeights(meshWeight, transition) {
   const names = Object.keys(transition.lod_ranges ?? {}).sort((a, b) => lodSortKey(a) - lodSortKey(b));
   const lods = {};
   for (const name of names) lods[name] = 0;
+  // Brez LOD konfiguracije ostane viden mesh, ker ni nic smiselnega za blend.
   if (names.length === 0) return { mesh: 1, gaussian_lods: lods };
 
   const gaussianBudget = Math.max(0, Math.min(1, 1 - meshWeight));
+  // Dokler mesh nosi skoraj celotno sliko, ne prizigam splattov po nepotrebnem.
   if (gaussianBudget <= 1e-5) return { mesh: 1, gaussian_lods: lods };
 
   const densityT = Math.sqrt(gaussianBudget);
@@ -392,7 +404,7 @@ function denseCutoverTransitionWeights(t, transition) {
 
 function detailDensityBand(t, denseCount) {
   // Reveal the dense splat cloud late: the mesh carries the image until the
-  // Gaussian representation is dense enough to avoid obvious holes.
+  // Gaussian representation is dense enough to avoid obvious holes
   const stops = [
     { position: 0.68, count: 0 },
     { position: 0.70, count: Math.min(250000, denseCount) },
@@ -432,7 +444,7 @@ function detailBuildTransitionReveal(t, transition) {
 
 function coverageDensityBand(t, denseCount) {
   // Coverage mode starts earlier than the normal detail mode. While the subset
-  // is sparse, the renderer temporarily enlarges splats to cover gaps.
+  // is sparse, the renderer temporarily enlarges splats to cover gaps
   const stops = [
     { position: 0.35, count: 0 },
     { position: 0.44, count: Math.round(denseCount * 0.15) },
@@ -587,6 +599,8 @@ function buildMesh(mesh) {
 
 async function buildSceneMesh(mesh) {
   const extension = mesh.source_extension?.toLowerCase();
+  // GLB/GLTF poskusim naloziti kot originalen teksturiran asset, ker fallback
+  // vertex barve ne pokazejo realnega videza modela.
   if (mesh.source_url && (extension === ".glb" || extension === ".gltf")) {
     try {
       setStatus(`Loading textured ${extension.toUpperCase()} mesh...`);
@@ -616,6 +630,7 @@ async function buildSceneMesh(mesh) {
       setStatus("Textured mesh loaded.");
       return root;
     } catch (error) {
+      // Pri GLB/GLTF ne narisemo fallback mesha, da je napaka teksture ali asset poti takoj vidna med preverjanjem.
       const message = `Textured mesh load failed. Fallback color mesh is disabled for GLB/GLTF so this issue is visible:\n${error.message}`;
       setMeshStatus(`Mesh display: FAILED textured ${extension.toUpperCase()} load. No fallback mesh is being drawn.`);
       setStatus(message);
@@ -687,6 +702,7 @@ function applyControlsLockState() {
 
 function syncCameraLockForMode() {
   const shouldLock = shouldAutoLockCamera();
+  // V trained/mesh2splat LOD pogledu zaklenem kamero avtomatsko
   if (shouldLock && !state.cameraLock.userUnlockedAuto) {
     state.cameraLock.enabled = true;
     state.cameraLock.automatic = true;
@@ -829,6 +845,7 @@ function hideAllGaussians() {
 async function getLod(count) {
   const key = `${state.preparedId}:${count}`;
   let lod = state.lodCache.get(key);
+  // Veliki LOD-i se nalagajo sele na zahtevo in potem ostanejo v cache-u, da slider ne nalaga iste binarne datoteke spet
   if (!lod) {
     setStatus(`Loading Gaussian LOD ${count} on demand...`);
     lod = await binaryLodApi(`/api/model/${state.preparedId}/lod/${count}/binary`);
@@ -864,6 +881,7 @@ function currentSortViewMatrix() {
 }
 
 function sortedLodForViewMatrix(lod, viewMatrix) {
+  // Ce pogled ni zaklenjen ali shranjen za auto-sort, pustim vrstni red taksen, kot ga je poslal backend.
   if (!viewMatrix) return { lod, sortMs: 0 };
   const rank = lod.rank ?? Float32Array.from({ length: lod.count }, (_, index) => index);
   const startedAt = performance.now();
@@ -886,7 +904,7 @@ function sortedLodForCurrentView(lod) {
 
 function subsetLod(lod, count) {
   // LODs are nested prefixes of the same ordering, so slicing the first N
-  // splats keeps the sampling deterministic instead of random.
+  // splats keeps the sampling deterministic instead of random
   const nextCount = Math.max(0, Math.min(Number(count) || 0, lod.count));
   const take = (values, components) => values.slice(0, nextCount * components);
   return {
@@ -904,14 +922,13 @@ function subsetLod(lod, count) {
 function optimizedDetailBucketCount(count, denseCount) {
   if (count <= 0) return 0;
   // Rebuild WebGL buffers only at small count steps instead of every tiny
-  // camera movement. This keeps the slider responsive during transition.
+  // camera movement - keeps the slider responsive during transition
   const bucket = 2048;
   return Math.min(denseCount, Math.max(1, Math.ceil(count / bucket) * bucket));
 }
 
 function optimizedDetailSourceName(activeCount) {
-  // Pick the smallest prepared LOD that still contains the active prefix.
-  // This avoids downloading the full dense cloud when a smaller LOD is enough.
+  // Pick the smallest prepared LOD that still contains the active prefix for fast loading of big splats
   const names = (state.prepared?.lods ?? [])
     .map((lod) => String(lod.name))
     .filter((name) => lodSortKey(name) >= activeCount)
@@ -926,8 +943,7 @@ async function ensureOptimizedDetailObject(activeCount) {
     return { object: state.optimizedDetailObject, sourceName };
   }
 
-  // Only one optimized subset is live at a time. Replacing it avoids keeping
-  // old GPU buffers around while the camera/slider changes.
+  // Only one optimized subset is live at a time.
   disposeObject(state.optimizedDetailObject);
   state.optimizedDetailObject = null;
   state.optimizedDetailKey = null;
@@ -949,6 +965,8 @@ async function ensureOptimizedDetailObject(activeCount) {
 
 async function ensureTransitionObject(count, weight = 1) {
   const key = String(count);
+  // Pri zaklenjenem ali auto-sort pogledu raje uporabim globinsko sortiran LOD.
+  // Za majhne utezi/velike oblake pa vcasih ostane nesortiran, da UI ne zmrzne.
   if (state.transitionViewLock || state.autoSortView) {
     const lod = await getLod(key);
     if (state.transitionViewLock || lod.count <= AUTO_SORT_THRESHOLD || weight >= 0.999) {
@@ -972,6 +990,7 @@ async function ensureSortedTransitionObject(count) {
   if (object) return object;
 
   const lod = await getLod(count);
+  // Sortiranje velikih grup lahko traja opazno dolgo, zato se userju pred delom pokaze overlay
   if (lod.count >= SORT_LOADING_THRESHOLD) {
     loadingOverlay.hidden = false;
     loadingMessage.textContent = `Sorting ${lod.count.toLocaleString()} splats for locked view...`;
@@ -997,6 +1016,7 @@ function detailPreviewLodName(detail) {
     .map((lod) => String(lod.name))
     .sort((a, b) => lodSortKey(a) - lodSortKey(b));
   const preview = available.filter((name) => lodSortKey(name) <= 100000).at(-1);
+  // Ce preview LOD nima dovolj splattov za trenutno fazo razkrivanja, preklopim na dense LOD, da ne bi prikaz zastal pri too-low quality
   if (detail.upperCount > lodSortKey(preview ?? "0")) return detail.denseName;
   return preview ?? detail.denseName;
 }
@@ -1014,8 +1034,7 @@ function additiveBuildTransitionReveal(distance, transition) {
   const denseName = names.at(-1);
   const denseCount = Number(denseName);
   const weights = additiveTransitionWeights(distance, transition);
-  // Additive mode keeps the mesh fully visible and converts the active LOD
-  // weights into a single optimized splat count.
+  // Additive mode keeps the mesh fully visible and converts the active LOD weights into a single optimized splat count.
   let weightedCount = 0;
   for (const [name, weight] of Object.entries(weights.gaussian_lods)) {
     weightedCount = Math.max(weightedCount, lodSortKey(name) * Math.max(0, Math.min(1, weight)));
@@ -1033,6 +1052,7 @@ function additiveBuildTransitionReveal(distance, transition) {
 }
 
 function pruneStaleAutoSortedObjects() {
+  // Auto-sort cache velja samo za trenutni pogled kamere
   if (state.transitionViewLock || !state.autoSortView) return;
   const suffix = `:${state.autoSortView.key}`;
   for (const [key, object] of state.sortedTransitionObjects.entries()) {
@@ -1045,6 +1065,7 @@ function pruneStaleAutoSortedObjects() {
 
 async function prepareAllSortedTransitionObjects() {
   const preparedNames = (state.prepared?.lods ?? []).map((lod) => String(lod.name));
+  // Optimized-detail sproti gradi samo aktivni subset, zato vnaprejsnje sortiranje vseh LOD-ov raje spustimo
   if (transitionStyleSelect.value === "optimized-detail") return;
   const lodNames = usesDenseRevealStyle(transitionStyleSelect.value) && preparedNames.length
     ? [preparedNames.sort((a, b) => lodSortKey(a) - lodSortKey(b)).at(-1)]
@@ -1092,6 +1113,7 @@ function transitionProgressForRadius(radius) {
 
 function setCameraDistance(radius) {
   const direction = camera.position.clone().sub(controls.target);
+  // Ce je kamera tocno v targetu, smer ni definirana; vzamem stabilno smer, da slider vseeno postavi kamero
   if (direction.lengthSq() <= 1e-8) direction.set(1, 0.35, 1);
   direction.normalize();
   camera.position.copy(controls.target).addScaledVector(direction, radius);
@@ -1169,6 +1191,7 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
   if (!state.prepared || !state.meshObject) return;
   syncCameraLockForMode();
   setTransitionControlsEnabled(true);
+  // Vsak asinhroni update dobi svoj id. Ko uporabnik hitro premika slider, stari requesti ne smejo prepisati novejsega stanja.
   const requestId = ++state.transitionRequestId;
   if (syncCamera) setCameraDistance(transitionRadiusForSlider(Number(transitionSlider.value)));
   const radius = cameraDistance();
@@ -1176,6 +1199,7 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
   if (syncSlider) transitionSlider.value = String(t);
   const style = transitionStyleSelect.value;
   if (!state.transitionViewLock) {
+    // Brez rocnega locka si zapomnim trenutni pogled za auto-sort, da se splatti uredijo po kameri
     camera.updateMatrixWorld();
     state.autoSortView = {
       key: makeTransitionViewKey(camera.position, controls.target),
@@ -1186,6 +1210,7 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
 
   hideAllGaussians();
 
+  // Na zacetku prehoda je cisti mesh najberljivejsi, zato predcasno koncam in ne nalagam nobenih gaussov.
   if (t <= 0.0001) {
     state.meshObject.visible = true;
     applyMeshOpacity(state.meshObject, MESH_OPACITY);
@@ -1250,6 +1275,7 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
         ? await ensureOptimizedDetailObject(activeCount)
         : { object: await ensureSortedTransitionObject(sourceName), sourceName };
       const object = objectResult.object;
+      // Ce je med cakanjem na LOD uporabnik ze premaknil slider, ta rezultat ni vec "aktualen"
       if (requestId !== state.transitionRequestId) return;
       const sourceCount = Number(objectResult.sourceName);
       if (usesOptimizedSubsetStyle(style)) {
@@ -1286,6 +1312,8 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
   const activePromises = [];
   const activeObjects = [];
   for (const [count, weight] of Object.entries(weights.gaussian_lods)) {
+    // Zelo majhne utezi se vizualno skoraj ne poznajo, zato jih skrijem in ne
+    // zapravljam renderiranja
     if (weight > 0.001) {
       activePromises.push(
         ensureTransitionObject(count, weight).then((object) => {
@@ -1323,6 +1351,8 @@ async function updateTransitionView({ syncCamera = false, syncSlider = true } = 
 }
 
 function scheduleTransitionFromCamera() {
+  // Kamera sprozi nov transition update samo v pravem nacinu in najvec enkrat
+  // na frame, da OrbitControls ne zasuje aplikacije z asinhronimi zahtevami
   if (modeSelect.value !== "transition" || state.busy || !state.prepared || state.transitionViewLock) return;
   if (state.transitionCameraUpdateQueued) return;
   state.transitionCameraUpdateQueued = true;
@@ -1334,6 +1364,7 @@ function scheduleTransitionFromCamera() {
 
 function updateVisibility() {
   syncCameraLockForMode();
+  // Transition mode ima svojo asinhrono vidljivost, ostali nacini pa samo prizgejo ali ugasnejo mesh/izbrani LOD.
   if (modeSelect.value === "transition") {
     updateTransitionView().catch((error) => setStatus(`Transition update failed:\n${error.message}`));
   } else {
@@ -1350,6 +1381,7 @@ async function updateMode() {
     updateVisibility();
     return;
   }
+  // Pri rocnem Gaussian/both pogledu mora biti izbrani LOD nalozen pred preklopom
   if (modeSelect.value !== "transition" && (modeSelect.value === "gaussian" || modeSelect.value === "both") && !state.selectedGaussianObject) {
     await loadSelectedLod();
     return;

@@ -1,3 +1,9 @@
+/*
+  Za razvrščanje splattov po globini v viewerju:
+  To je pomembno zato, da se prosojni gaussian elementi rišejo v pravilnem
+  vrstnem redu in je primerjava med nivoji podrobnosti vizualno bolj poštena.
+*/
+
 export function depthSortedOrder(xyz, matrixElements) {
   const count = ArrayBuffer.isView(xyz) ? xyz.length / 3 : xyz.length;
   const depths = new Float32Array(count);

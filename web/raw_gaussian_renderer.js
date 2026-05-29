@@ -1,3 +1,7 @@
+/*
+  WebGL renderer za Gaussian splatts - boljše kot Three.js točkovni prikaz
+*/
+
 function createShader(gl, type, source) {
   const shader = gl.createShader(type);
   if (!shader) throw new Error("Failed to create raw Gaussian shader.");
@@ -92,6 +96,7 @@ void main() {
 
   // A screen-aligned quad cannot be safely clipped through the camera plane.
   // Reject near/behind-camera splats instead of projecting them into huge streaks.
+  
   if (depth <= 0.05) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     vDxPixels = vec2(0.0);
