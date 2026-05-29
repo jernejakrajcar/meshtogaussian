@@ -1,3 +1,9 @@
+"""skripta za gradnjo LOD nivojev iz treniranih Gaussov.
+
+Pomaga izdelati redkejše verzije splattov, ki jih potem uporabljamo za
+preizkus postopnega prikaza in zmanjševanja števila elementov.
+"""
+
 from __future__ import annotations
 
 import argparse

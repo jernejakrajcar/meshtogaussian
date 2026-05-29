@@ -1,3 +1,9 @@
+"""Popravilo sintetičnega COLMAP dataseta.
+
+Helper skripta za primere, ko je treba naknadno urediti tekstovne COLMAP
+datoteke, predvsem seed točke, da jih zunanja orodja pravilno preberejo.
+"""
+
 from __future__ import annotations
 
 import argparse

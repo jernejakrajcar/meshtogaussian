@@ -1,3 +1,9 @@
+"""SKripta za spletni visualizer.
+
+Skripta zažene FastAPI/uvicorn aplikacijo iz projekta, da lahko rezultate
+pipeline-a odpremo v brskalniku brez ročnega ukaza.
+"""
+
 from __future__ import annotations
 
 import argparse

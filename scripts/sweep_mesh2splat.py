@@ -1,3 +1,9 @@
+"""Eksperimentalni sweep nastavitev za Mesh2Splat.
+
+Skripta požene več gostot oziroma skal, zbere manifest in pomaga izbrati LOD
+nivoje, ki so primerni za primerjavo v vizualizarju.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -40,6 +46,8 @@ def main() -> None:
     cfg = load_config(args.config)
     base_config = Mesh2SplatConfig.from_dict(cfg.get("mesh2splat", {}))
     status = check_mesh2splat_environment(base_config)
+    # Pri dry-run dovolimo manjkajoce okolje, ker zelimo samo zapisati ukaze za
+    # pregled; pri pravem zagonu pa bi to takoj padlo.
     if status["problems"] and not args.dry_run:
         raise SystemExit("; ".join(status["problems"]))
 
@@ -56,6 +64,8 @@ def main() -> None:
             run_name = _run_name(mesh.stem, density, scale)
             temp_ply = sweep_dir / f"{run_name}.ply"
             extra_args = [*base_config.extra_args, *args.extra_arg]
+            # Scale parameter je opcijski, ker ga ne podpirajo nujno vse verzije
+            # Mesh2Splat CLI-ja.
             if scale is not None:
                 extra_args.extend([args.scale_arg, str(scale)])
             config = replace(base_config, output_dir=sweep_dir, extra_args=extra_args)
@@ -82,6 +92,8 @@ def main() -> None:
             entry["returncode"] = completed.returncode
             entry["stdout"] = completed.stdout
             entry["stderr"] = completed.stderr
+            # Ne prekinem celotnega sweepa pri eni neuspeli kombinaciji; rezultat
+            # shranim v manifest in grem na naslednji poskus.
             if completed.returncode != 0:
                 entry["error"] = completed.stderr or completed.stdout
                 results.append(entry)
@@ -96,6 +108,8 @@ def main() -> None:
 
             stats = analyze_gaussian_coverage(temp_ply, sample_count=args.sample_count)
             final_ply = output_dir / f"{mesh.stem}-{stats.count}.ply"
+            # Koncno ime vsebuje dejansko stevilo splattov, ker je to bolj
+            # uporabno za LOD izbiro kot vhodna gostota.
             if temp_ply.resolve() != final_ply.resolve():
                 shutil.copy2(temp_ply, final_ply)
             entry["output_ply"] = str(final_ply)
@@ -138,6 +152,8 @@ def _recommended_lods(results: list[dict], max_levels: int = 7) -> list[str]:
         if item.get("output_ply") and item.get("stats", {}).get("count", 0) > 0
     ]
     successful.sort(key=lambda item: int(item["stats"]["count"]))
+    # Ce je uspesnih rezultatov malo, jih obdrzim vse; sicer vzamem enakomerno
+    # razporejene gostote, da LOD set ni prevelik.
     if len(successful) <= max_levels:
         return [item["output_ply"] for item in successful]
     positions = sorted({round(i * (len(successful) - 1) / (max_levels - 1)) for i in range(max_levels)})

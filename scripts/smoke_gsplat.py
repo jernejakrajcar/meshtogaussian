@@ -1,3 +1,9 @@
+"""krajši Python smoke test za gsplat rasterizacijo (test)
+
+Datoteka ni del končnega pipeline-a, ampak preveri, ali lahko gsplat v trenutnem
+okolju nariše majhen primer brez napake.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

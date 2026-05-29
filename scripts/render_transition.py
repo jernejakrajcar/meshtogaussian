@@ -1,3 +1,8 @@
+"""Skripta za renderiranje videa prehoda med meshem in splatti.
+
+Za primerjave, da iz iste konfiguracije naredi izhodne slike oziroma video, ki pokaže obnašanje LOD prehoda.
+"""
+
 from __future__ import annotations
 
 import argparse

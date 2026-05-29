@@ -1,3 +1,9 @@
+"""Skripta za generiranje sintetičnih pogledov iz mesha.
+
+Uporabimo jo za pripravo slik in kamer, ki potem služijo kot vhod za trening
+Gaussovih splattov oziroma za preverjanje renderiranja.
+"""
+
 from __future__ import annotations
 
 import argparse

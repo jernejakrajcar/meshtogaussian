@@ -1,3 +1,9 @@
+"""Preverjanje CUDA/gsplat okolja pred zagonom treninga.
+
+Skripta pove, ali so GPU, PyTorch, gsplat repozitorij in potrebne poti
+pripravljeni, da se daljši trening ne ustavi šele na sredini.
+"""
+
 from __future__ import annotations
 
 import argparse

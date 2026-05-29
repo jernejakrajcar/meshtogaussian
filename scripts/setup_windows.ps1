@@ -1,3 +1,9 @@
+<#
+  Glavna Windows pripravljalna skripta za projekt.
+  Namesti odvisnosti, po potrebi preveri Mesh2Splat in lahko zažene teste ali
+  viewer - za zagon okolja za initial installation
+#>
+
 param(
     [string]$Python = "python",
     [string]$Mesh2SplatExe = "",

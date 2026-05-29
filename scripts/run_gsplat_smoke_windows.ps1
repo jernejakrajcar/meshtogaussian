@@ -1,3 +1,9 @@
+<#
+  Smoke test za gsplat na Windows.
+  Za quick testing, da se CUDA razširitve zgradijo in da osnovni
+  render sploh steče, preden porabimo čas za daljši trening.
+#>
+
 param(
   [string]$VenvPath = ".venv-gsplat",
   [string]$LogPath = "data/gsplat_smoke/build.log",

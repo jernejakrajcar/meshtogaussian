@@ -1,3 +1,9 @@
+<#
+  Nastavitev lokalnega gsplat okolja na Windows.
+  Skripta poišče Python, Visual Studio orodja in pripravi virtualno okolje, kar
+  je predvsem praktična pomoč za ponovljiv zagon treninga na novem računalniku.
+#>
+
 param(
   [string]$PythonVersion = "3.11",
   [string]$PythonExe = "",

@@ -1,3 +1,9 @@
+"""Skripta za izračun evalvacijskih metrik.
+
+Primerja renderirane rezultate in izpiše številke, kot so MSE, PSNR in popping,
+da lahko prehode in LOD nastavitve ocenimo bolj objektivno kot samo na oko.
+"""
+
 from __future__ import annotations
 
 import argparse

@@ -1,3 +1,9 @@
+"""Priprava realnega COLMAP dataseta iz slik.
+
+Skripta izvaja klice na COLMAP in uredi izhodno mapo, da lahko poleg
+sintetičnih podatkov v nalogi testiramo tudi realne fotografije.
+"""
+
 from __future__ import annotations
 
 import argparse
