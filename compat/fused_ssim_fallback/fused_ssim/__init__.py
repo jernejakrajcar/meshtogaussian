@@ -1,3 +1,8 @@
+"""Lokalni fallback za fused_ssim - dodano zaradi kompatibilnosti za gspla env
+
+omogoči, da gsplat runna tudi, ko CUDA implementacija SSIM ni nameščena
+"""
+
 from __future__ import annotations
 
 import torch
