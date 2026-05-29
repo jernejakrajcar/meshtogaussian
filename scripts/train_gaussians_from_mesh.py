@@ -1,3 +1,9 @@
+"""Celoten ukazni workflow od mesha do treniranih Gaussov
+
+Skripta pripravi sintetične poglede, COLMAP strukturo in gsplat ukaz,
+glavna pot za ustvarjanje rezultatov iz izbranega 3D modela
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -62,6 +68,8 @@ def main() -> None:
     with logger.stage("configuration and mesh loading"):
         cfg = load_config(args.config)
         mesh_cfg = cfg.get("mesh", {})
+        # 'demo' je poseben vhod za proceduralni model; vse ostalo obravnavam
+        # kot pot do prave mesh datoteke.
         mesh_path = None if args.mesh.lower() in {"demo", "none", "null"} else args.mesh
         mesh = MeshAsset.load(mesh_path, fallback_color=mesh_cfg.get("color"), demo_shape=mesh_cfg.get("demo_shape", "uv_sphere"))
         _, mesh_radius = mesh.normalize_to_unit_sphere()
@@ -75,6 +83,8 @@ def main() -> None:
         if args.research_defaults
         else camera_cfg.get("elevations", [-20.0, 0.0, 20.0])
     )
+    # Prioriteta je: ekspliciten CLI, nato raziskovalni defaulti, nato config.
+    # Tako lahko hitro preglasim samo en parameter eksperimenta.
     if args.elevations:
         elevations = _float_list(args.elevations)
     elif args.research_defaults:
@@ -111,6 +121,8 @@ def main() -> None:
     )
 
     dataset_root = Path(args.dataset_out or training_cfg.get("root", "data/generated_datasets")) / mesh.name
+    # Reuse je uporaben, ker je renderiranje datasetov pocasno; vseeno preverim,
+    # da manifest obstaja in kasneje tudi osnovne COLMAP datoteke.
     if args.reuse_dataset and (dataset_root / "manifest.json").exists():
         with logger.stage("synthetic COLMAP dataset reuse"):
             manifest = _load_existing_manifest(dataset_root)
@@ -143,6 +155,8 @@ def main() -> None:
         data_factor=int(gsplat_cfg.get("data_factor", 1)),
         extra_args=[str(arg) for arg in gsplat_cfg.get("extra_args", [])] + [str(arg) for arg in args.trainer_arg],
     )
+    # CUDA preflight je samo za dejanski trening. Pri dry-run pripravi ukaza ni
+    # treba zahtevati GPU okolja.
     if args.run_trainer and not args.skip_cuda_check:
         with logger.stage("CUDA/gsplat preflight"):
             status = check_cuda_training_environment(gsplat_repo, python_executable=gsplat_python)
@@ -159,6 +173,8 @@ def main() -> None:
         summary = run_gsplat_training(command, execute=args.run_trainer)
     print("gsplat command:")
     print(command.as_shell_string())
+    # Privzeto skripta ostane varna in samo pripravi ukaz/dataset; training se
+    # zazene sele z eksplicitnim --run-trainer.
     if not args.run_trainer:
         print("Training was not executed. This gsplat route is experimental future work; the main workflow uses Mesh2Splat-exported PLY LODs.")
         print("Add --run-trainer after installing/configuring gsplat if you want to test it.")

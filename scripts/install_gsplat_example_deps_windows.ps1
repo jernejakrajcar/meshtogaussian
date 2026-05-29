@@ -1,3 +1,9 @@
+<#
+  Namestitvena skripta za odvisnosti gsplat primerov na Windows.
+  Pomožni korak, da lahko lokalno zaženemo gsplat okolje z ustreznim
+  PyTorch/CUDA wheelom, ni pa sama jedro algoritma naloge.
+#>
+
 param(
   [string]$VenvPath = ".venv-gsplat310",
   [string]$GsplatRepo = "C:\Users\Uporabnik\Documents\faks\magisterij\1.letnik\nrg\gsplat",

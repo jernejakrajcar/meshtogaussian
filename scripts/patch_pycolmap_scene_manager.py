@@ -1,3 +1,9 @@
+"""Majhen popravek za pycolmap SceneManager v lokalnem okolju.
+
+Podporna/eksperimentalna datoteka: pomaga obiti neujemanja v
+nameščeni knjižnici, da lahko ostali del pipeline-a bere COLMAP strukturo.
+"""
+
 from __future__ import annotations
 
 import inspect
