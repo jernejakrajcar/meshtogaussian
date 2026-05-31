@@ -345,6 +345,7 @@ def test_frontend_debug_ui_sections_and_hints() -> None:
     html = (root / "web" / "index.html").read_text(encoding="utf-8")
     main = (root / "web" / "main.js").read_text(encoding="utf-8")
     css = (root / "web" / "styles.css").read_text(encoding="utf-8")
+    report = (root / "docs" / "report" / "report.tex").read_text(encoding="utf-8")
 
     for heading in ["Input", "Gaussian Data", "View", "Camera / Rendering"]:
         assert f"<h2>{heading}</h2>" in html
@@ -364,23 +365,38 @@ def test_frontend_debug_ui_sections_and_hints() -> None:
     assert 'id="gaussianYOffset"' in html
     assert 'id="gaussianScale"' in html
     assert 'id="gaussianScaleValue"' in html
-    assert "splat-render-18-optimized-additive" in main
+    assert 'id="gpuRasterizerDebug" type="checkbox"' in html
+    assert 'id="gpuRasterizerDebug" type="checkbox" checked' not in html
+    assert "GPU rasterizer debug" in html
+    assert 'id="performanceHud"' in html
+    assert "splat-render-19-gpu-debug" in main
     assert 'id="refreshModelsButton"' in html
     assert 'id="lockCameraButton"' in html
     assert "body {" in css
     assert "overflow: hidden;" in css
     assert ".log-panel" in css
+    assert ".performance-hud" in css
     assert "overscroll-behavior: contain;" in css
     assert "statusBox.scrollTop = statusBox.scrollHeight" in main
     assert "const followsTail = statusBox.scrollHeight - statusBox.scrollTop - statusBox.clientHeight <= 4" in main
     assert "DEFAULT_TRAINED_LOD_COUNTS" in main
     assert "function applyGaussianTransform(object)" in main
     assert "function resetGaussianTransformOverrides()" in main
+    assert "function updateGpuRasterizerDebugStatus" in main
+    assert "function updatePerformanceHud" in main
+    assert "hudFrameTimes" in main
+    assert "currentGaussianDrawCount" in main
+    assert "fpsEvalButton" not in main
+    assert "window.__lastFpsEvaluation" not in main
+    assert "gpuRasterizerDebug?.checked" in main
+    assert "WebGL2 raw Gaussian path active" in main
     assert 'gaussianScale.value = "1"' in main
     assert "1 - smoothstep(0.90, 1.0, t)" in main
     assert "createRawGaussianRenderer" in main
     assert "new THREE.ShaderMaterial" not in main
     assert "raw_gaussian_renderer.js" in main
+    assert "const rawGaussianRenderer = createRawGaussianRenderer" not in main
+    assert "rawGaussianRenderer = createRawGaussianRenderer(gaussianCanvas)" in main
     raw_renderer = (root / "web" / "raw_gaussian_renderer.js").read_text(encoding="utf-8")
     assert "drawElementsInstanced" in raw_renderer
     assert "gl.POINTS" not in raw_renderer
@@ -427,6 +443,27 @@ def test_frontend_debug_ui_sections_and_hints() -> None:
     assert '!item.id.startsWith("demo:")' in main
     assert "initializeLists();" in main
     assert "Restart the server if it was already running before this update." in main
+    assert "custom raw WebGL2 splat renderer" in report
+    assert "GPU rasterizer debug toggle" in report
+    assert "GPU rasterization is still outside the current implementation" not in report
+    assert "level of detail (LOD)" in report
+    assert "Mesh2Splat produces a splat cloud" in report
+    assert "https://github.com/jernejakrajcar/meshtogaussian" in report
+    assert (root / "docs" / "report" / "figures" / "plantMesh2splat.jpg").exists()
+    assert "figures/plantMesh2splat.jpg" in report
+    assert (root / "docs" / "report" / "figures" / "plantDetailOverMesh_1.jpg").exists()
+    assert (root / "docs" / "report" / "figures" / "plantCoverage_1.jpg").exists()
+    assert (root / "docs" / "report" / "figures" / "plantKeepMesh_1.jpg").exists()
+    assert "figures/plantDetailOverMesh_1.jpg" in report
+    assert "figures/plantCoverage_1.jpg" in report
+    assert "figures/plantKeepMesh_1.jpg" in report
+    assert "at 96\\% transition" in report
+    assert "Coverage-scaled detail" in report
+    assert "\\subsection{Live FPS Display}" in report
+    assert "plant-3146965.ply" in report
+    assert "current FPS, average frame time, visible splat count" in report
+    assert "formal evaluation table" in report
+    assert "window.\\_\\_lastFpsEvaluation" not in report
 
 
 def test_trained_gaussian_dropdown_names_include_parent_folder(tmp_path: Path) -> None:

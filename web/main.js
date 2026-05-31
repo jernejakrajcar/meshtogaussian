@@ -24,6 +24,7 @@ const transitionSlider = document.querySelector("#transitionSlider");
 const transitionValue = document.querySelector("#transitionValue");
 const lockTransitionViewButton = document.querySelector("#lockTransitionViewButton");
 const lockCameraButton = document.querySelector("#lockCameraButton");
+const gpuRasterizerDebug = document.querySelector("#gpuRasterizerDebug");
 const lodSelect = document.querySelector("#lodSelect");
 const pointSize = document.querySelector("#pointSize");
 const opacity = document.querySelector("#opacity");
@@ -32,6 +33,7 @@ const gaussianScale = document.querySelector("#gaussianScale");
 const gaussianScaleValue = document.querySelector("#gaussianScaleValue");
 const statusBox = document.querySelector("#status");
 const viewer = document.querySelector("#viewer");
+const performanceHud = document.querySelector("#performanceHud");
 const loadingOverlay = document.querySelector("#loadingOverlay");
 const loadingMessage = document.querySelector("#loadingMessage");
 const representationHint = document.querySelector("#representationHint");
@@ -42,8 +44,9 @@ const transitionStyleHint = document.querySelector("#transitionStyleHint");
 const transitionHint = document.querySelector("#transitionHint");
 const lockTransitionHint = document.querySelector("#lockTransitionHint");
 const lockCameraHint = document.querySelector("#lockCameraHint");
+const gpuRasterizerDebugHint = document.querySelector("#gpuRasterizerDebugHint");
 const uiControls = [...document.querySelectorAll(".sidebar button, .sidebar input, .sidebar select")];
-const APP_VERSION = "splat-render-18-optimized-additive";
+const APP_VERSION = "splat-render-19-gpu-debug";
 const DEFAULT_TRAINED_LOD_COUNTS = [
   10, 20, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 20000, 50000, 100000,
 ];
@@ -78,6 +81,9 @@ const state = {
     automatic: false,
     userUnlockedAuto: false,
   },
+  hudFrameTimes: [],
+  hudLastFrameAt: 0,
+  hudLastUpdateAt: 0,
 };
 const MESH_OPACITY = 1.0;
 const SORT_LOADING_THRESHOLD = 300000;
@@ -97,7 +103,14 @@ viewer.appendChild(renderer.domElement);
 const gaussianCanvas = document.createElement("canvas");
 gaussianCanvas.id = "gaussianLayer";
 viewer.appendChild(gaussianCanvas);
-const rawGaussianRenderer = createRawGaussianRenderer(gaussianCanvas);
+let rawGaussianRendererError = null;
+let rawGaussianRenderer;
+try {
+  rawGaussianRenderer = createRawGaussianRenderer(gaussianCanvas);
+} catch (error) {
+  rawGaussianRendererError = error;
+  rawGaussianRenderer = createUnavailableRawGaussianRenderer(error);
+}
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -128,6 +141,26 @@ function setMeshStatus(message) {
   state.meshStatus = message;
 }
 
+function createUnavailableRawGaussianRenderer(error) {
+  const message = `WebGL2 raw Gaussian renderer is unavailable: ${error.message}`;
+  return {
+    uploadScene() {
+      throw new Error(message);
+    },
+    uploadSorted() {
+      throw new Error(message);
+    },
+    disposeLayer() {},
+    setDepthMesh() {},
+    setSize() {},
+    draw() {},
+    dispose() {},
+    get limits() {
+      return { maxPointSize: 0, maxGaussianPointSize: 0 };
+    },
+  };
+}
+
 function buildStatusContext() {
   const selectedModel = modelSelect.options[modelSelect.selectedIndex]?.textContent || "none";
   const prepared = state.prepared;
@@ -147,7 +180,67 @@ function buildStatusContext() {
     `view mode: ${viewModeLabel(modeSelect.value)}`,
     `transition lock: ${lockState}`,
     `current LOD: ${currentLod}`,
+    ...gpuRasterizerDebugLines(),
   ].join("\n");
+}
+
+function gpuRasterizerDebugLines() {
+  if (!gpuRasterizerDebug?.checked) return [];
+  if (rawGaussianRendererError) return [`gpu rasterizer: unavailable (${rawGaussianRendererError.message})`];
+  const limits = rawGaussianRenderer.limits;
+  return [
+    "gpu rasterizer: WebGL2 raw Gaussian path active",
+    `gpu splat max size: ${limits.maxGaussianPointSize}px`,
+  ];
+}
+
+function updateGpuRasterizerDebugStatus({ announce = true } = {}) {
+  if (!gpuRasterizerDebugHint) return;
+  if (rawGaussianRendererError) {
+    gpuRasterizerDebugHint.textContent = `WebGL2/GPU path is unavailable: ${rawGaussianRendererError.message}`;
+    gpuRasterizerDebugHint.classList.add("is-disabled");
+  } else if (gpuRasterizerDebug?.checked) {
+    gpuRasterizerDebugHint.textContent = "Gaussian splats are rendered through the default WebGL2 GPU rasterizer.";
+    gpuRasterizerDebugHint.classList.remove("is-disabled");
+  } else {
+    gpuRasterizerDebugHint.textContent = "Shows whether Gaussian splats are using the WebGL2 GPU path.";
+    gpuRasterizerDebugHint.classList.remove("is-disabled");
+  }
+  if (announce) setStatus(gpuRasterizerDebug?.checked ? "GPU rasterizer debug enabled." : "GPU rasterizer debug hidden.");
+}
+
+function currentGaussianDrawCount() {
+  return allGaussianObjects()
+    .filter((object) => object.visible && object.opacityMultiplier > 0)
+    .reduce((sum, object) => sum + (object.geometry?.instanceCount ?? 0), 0);
+}
+
+function updatePerformanceHud(now) {
+  if (!performanceHud) return;
+  if (state.hudLastFrameAt > 0) {
+    state.hudFrameTimes.push(now - state.hudLastFrameAt);
+    if (state.hudFrameTimes.length > 90) state.hudFrameTimes.shift();
+  }
+  state.hudLastFrameAt = now;
+  if (now - state.hudLastUpdateAt < 250 && performanceHud.textContent !== "FPS --") return;
+  state.hudLastUpdateAt = now;
+
+  const frameTimes = state.hudFrameTimes;
+  const avgFrameMs = frameTimes.length
+    ? frameTimes.reduce((sum, value) => sum + value, 0) / frameTimes.length
+    : 0;
+  const fps = avgFrameMs > 0 ? 1000 / avgFrameMs : 0;
+  const viewport = rendererViewport();
+  const visibleSplats = currentGaussianDrawCount();
+  const style = modeSelect.value === "transition" ? transitionStyleSelect.value : modeSelect.value;
+  const gpuStatus = rawGaussianRendererError ? "WebGL2 off" : "WebGL2 on";
+  performanceHud.innerHTML = [
+    `<strong>${fps > 0 ? fps.toFixed(0) : "--"} FPS</strong>`,
+    `${avgFrameMs > 0 ? avgFrameMs.toFixed(1) : "--"} ms/frame`,
+    `${visibleSplats.toLocaleString()} splats`,
+    `${style} @ ${Math.round(Number(transitionSlider.value) * 100)}%`,
+    `${gpuStatus}, ${viewport.x}x${viewport.y}`,
+  ].join("<br />");
 }
 
 function representationLabel(value) {
@@ -1644,9 +1737,11 @@ function updatePointMaterial() {
 
 function animate() {
   requestAnimationFrame(animate);
+  const now = performance.now();
   controls.update();
   renderer.render(scene, camera);
   drawRawGaussianLayer();
+  updatePerformanceHud(now);
 }
 
 window.addEventListener("resize", resize);
@@ -1680,6 +1775,7 @@ transitionSlider.addEventListener("pointercancel", finishTransitionSliderPreview
 transitionSlider.addEventListener("change", finishTransitionSliderPreview);
 lockTransitionViewButton.addEventListener("click", toggleTransitionViewLock);
 lockCameraButton.addEventListener("click", toggleCameraLock);
+gpuRasterizerDebug?.addEventListener("change", () => updateGpuRasterizerDebugStatus());
 pointSize.addEventListener("input", updatePointMaterial);
 opacity.addEventListener("input", updatePointMaterial);
 gaussianYOffset.addEventListener("input", updatePointMaterial);
@@ -1691,5 +1787,6 @@ applyBackgroundTheme();
 updateGaussianScaleValue();
 updateTransitionLockUi();
 updateCameraLockUi();
+updateGpuRasterizerDebugStatus({ announce: false });
 animate();
 initializeLists();

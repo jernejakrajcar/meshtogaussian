@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Mesh-to-Gaussian Visualizer</title>
-    <link rel="stylesheet" href="/static/styles.css?v=splat-render-18-optimized-additive" />
+    <link rel="stylesheet" href="/static/styles.css?v=splat-render-19-gpu-debug" />
   </head>
   <body>
     <main class="app">
@@ -105,6 +105,14 @@
           <span id="lockCameraHint" class="hint">For Gaussian/Both view with trained splats.</span>
 
           <label class="control">
+            <span>
+              <input id="gpuRasterizerDebug" type="checkbox" />
+              GPU rasterizer debug
+            </span>
+            <span id="gpuRasterizerDebugHint" class="hint">Shows whether Gaussian splats are using the WebGL2 GPU path.</span>
+          </label>
+
+          <label class="control">
             Point size
             <input id="pointSize" type="range" min="0.01" max="0.8" step="0.005" value="0.16" />
           </label>
@@ -136,6 +144,7 @@
 
       <section class="viewport">
         <div id="viewer">
+          <div id="performanceHud" class="performance-hud" aria-live="off">FPS --</div>
           <div id="loadingOverlay" class="loading-overlay" hidden>
             <div class="loading-panel">
               <div class="spinner" aria-hidden="true"></div>
@@ -159,6 +168,6 @@
         }
       }
     </script>
-    <script type="module" src="/static/main.js?v=splat-render-18-optimized-additive"></script>
+    <script type="module" src="/static/main.js?v=splat-render-19-gpu-debug"></script>
   </body>
 </html>
