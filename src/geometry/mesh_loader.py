@@ -29,7 +29,7 @@ class MeshAsset:
         cls,
         path: str | Path | None,
         fallback_color: list[float] | None = None,
-        demo_shape: str = "uv_sphere",
+        demo_shape: str = "cube",
     ) -> "MeshAsset":
         # path=None pomeni, da zazenemo proceduralni demo, kar je uporabno za
         # testiranje brez zunanjih modelov
@@ -92,12 +92,9 @@ class MeshAsset:
     @classmethod
     def create_demo_shape(cls, shape: str, color: list[float] | None = None) -> "MeshAsset":
         shape_key = shape.lower().replace("-", "_")
-        # Podprti samo dve demo obliki
-        if shape_key in {"sphere", "uv_sphere"}:
-            return cls.create_demo_sphere(color=color)
         if shape_key == "cube":
             return cls.create_demo_cube(color=color)
-        raise ValueError(f"Unsupported demo_shape {shape!r}. Use 'uv_sphere' or 'cube'.")
+        raise ValueError(f"Unsupported demo_shape {shape!r}. Use 'cube'.")
 
     @staticmethod
     def _extract_vertex_colors(mesh: Any, count: int, fallback_color: list[float] | None) -> np.ndarray:
@@ -136,47 +133,6 @@ class MeshAsset:
             alpha = texture[:, :, 3:4] / 255.0
             rgb = rgb * alpha + (1.0 - alpha)
         return np.clip(uvs, 0.0, 1.0).astype(np.float32), np.clip(rgb, 0.0, 1.0).astype(np.float32)
-
-    @classmethod
-    def create_demo_sphere(
-        cls,
-        segments: int = 48,
-        rings: int = 24,
-        color: list[float] | None = None,
-    ) -> "MeshAsset":
-        vertices = []
-        colors = []
-        base = np.asarray(color or [0.78, 0.64, 0.42], dtype=np.float32)
-        for y in range(rings + 1):
-            v = y / rings
-            theta = np.pi * v
-            for x in range(segments):
-                u = x / segments
-                phi = 2.0 * np.pi * u
-                pos = np.array(
-                    [np.sin(theta) * np.sin(phi), np.cos(theta), np.sin(theta) * np.cos(phi)],
-                    dtype=np.float32,
-                )
-                vertices.append(pos)
-                tint = 0.82 + 0.18 * pos[1]
-                colors.append(np.clip(base * tint + np.array([0.08 * u, 0.04 * v, 0.0]), 0.0, 1.0))
-
-        faces = []
-        for y in range(rings):
-            for x in range(segments):
-                a = y * segments + x
-                b = y * segments + (x + 1) % segments
-                c = (y + 1) * segments + x
-                d = (y + 1) * segments + (x + 1) % segments
-                faces.append([a, c, b])
-                faces.append([b, c, d])
-
-        return cls(
-            vertices=np.asarray(vertices, dtype=np.float32),
-            faces=np.asarray(faces, dtype=np.int64),
-            vertex_colors=np.asarray(colors, dtype=np.float32),
-            name="demo_sphere",
-        )
 
     @classmethod
     def create_demo_cube(cls, color: list[float] | None = None) -> "MeshAsset":

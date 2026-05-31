@@ -71,7 +71,7 @@ def main() -> None:
         # 'demo' je poseben vhod za proceduralni model; vse ostalo obravnavam
         # kot pot do prave mesh datoteke.
         mesh_path = None if args.mesh.lower() in {"demo", "none", "null"} else args.mesh
-        mesh = MeshAsset.load(mesh_path, fallback_color=mesh_cfg.get("color"), demo_shape=mesh_cfg.get("demo_shape", "uv_sphere"))
+        mesh = MeshAsset.load(mesh_path, fallback_color=mesh_cfg.get("color"), demo_shape=mesh_cfg.get("demo_shape", "cube"))
         _, mesh_radius = mesh.normalize_to_unit_sphere()
         info(f"[info] mesh: {mesh.name} | vertices: {len(mesh.vertices):,} | faces: {len(mesh.faces):,} | radius: {mesh_radius:.4f}")
 

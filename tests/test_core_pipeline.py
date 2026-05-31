@@ -17,7 +17,7 @@ from src.transition.blending import LODTransitionController
 
 
 def test_mesh_normalization_fits_unit_sphere() -> None:
-    mesh = MeshAsset.create_demo_sphere(segments=12, rings=6)
+    mesh = MeshAsset.create_demo_cube()
     mesh.vertices *= 4.0
     mesh.vertices += np.array([3.0, -2.0, 1.0], dtype=np.float32)
     mesh.normalize_to_unit_sphere()
@@ -34,7 +34,7 @@ def test_camera_points_toward_origin() -> None:
 
 
 def test_lod_counts_are_exact() -> None:
-    mesh = MeshAsset.create_demo_sphere(segments=16, rings=8)
+    mesh = MeshAsset.create_demo_cube()
     points, normals, colors = mesh.sample_surface(500, seed=3)
     lods = GaussianLODBuilder(points, normals, colors, seed=3).build_nested([10, 100, 500])
     assert {name: lod.count for name, lod in lods.items()} == {"10": 10, "100": 100, "500": 500}
@@ -55,7 +55,7 @@ def test_transition_weights_sum_to_one() -> None:
 
 
 def test_short_cpu_render_smoke() -> None:
-    mesh = MeshAsset.create_demo_sphere(segments=10, rings=5)
+    mesh = MeshAsset.create_demo_cube()
     mesh.normalize_to_unit_sphere()
     camera = CameraRig.transition_path(2.5, 1.5, 1, (48, 48), 30.0, 10.0)[0]
     mesh_rgb = SyntheticViewRenderer((48, 48)).render(mesh, camera, outputs=["rgb"])["rgb"]
@@ -70,7 +70,7 @@ def test_short_cpu_render_smoke() -> None:
 
 def test_pipeline_cli_demo_shape_override() -> None:
     cfg = {
-        "mesh": {"path": "some-file.obj", "demo_shape": "uv_sphere"},
+        "mesh": {"path": "some-file.obj", "demo_shape": "cube"},
         "render": {"image_size": [32, 32]},
         "camera": {"train_views": 1, "elevations": [0.0]},
         "demo": {"frames": 1},

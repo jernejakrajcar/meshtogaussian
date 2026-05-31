@@ -1490,7 +1490,7 @@ async function loadModels({ preserveSelection = false } = {}) {
   none.value = "";
   none.textContent = "Select a source model";
   modelSelect.appendChild(none);
-  for (const model of data.models.filter((item) => !item.id.startsWith("demo:"))) {
+  for (const model of data.models) {
     const option = document.createElement("option");
     option.value = model.id;
     option.textContent = model.name;

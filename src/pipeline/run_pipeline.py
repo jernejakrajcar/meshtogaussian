@@ -41,7 +41,7 @@ def build_scene(cfg: dict[str, Any]):
     mesh = MeshAsset.load(
         mesh_cfg.get("path"),
         fallback_color=mesh_cfg.get("color"),
-        demo_shape=str(mesh_cfg.get("demo_shape", "uv_sphere")),
+        demo_shape=str(mesh_cfg.get("demo_shape", "cube")),
     )
     mesh.normalize_to_unit_sphere()
 
@@ -273,7 +273,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--demo-shape",
-        choices=["uv_sphere", "sphere", "cube"],
+        choices=["cube"],
         default=None,
         help="Procedural model to generate when --mesh is omitted or set to 'demo'.",
     )

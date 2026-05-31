@@ -343,9 +343,7 @@ class ModelStore:
 
     def list_models(self) -> list[dict[str, str]]:
         self.ensure_dirs()
-        models = [
-            {"id": "demo:procedural-sphere", "name": "Procedural demo sphere", "source": "generated"}
-        ]
+        models = []
         seen: set[Path] = set()
         for directory in self.source_dirs:
             if not directory.exists():
@@ -437,12 +435,12 @@ class ModelStore:
                 "Automatic Mesh2Splat LOD sets are disabled. Select one Mesh2Splat .ply file as the Gaussian source."
             )
         with self.logger.stage("web model preparation"):
-            source = "generated"
+            source = ""
             mesh_path: Path | None = None
-            # Demo model nima datoteke na disku
-            if model_id and not model_id.startswith("demo:"):
-                mesh_path = self.id_to_path(model_id)
-                source = str(mesh_path)
+            if not model_id:
+                raise ValueError("Select a source mesh before loading the setup.")
+            mesh_path = self.id_to_path(model_id)
+            source = str(mesh_path)
 
             mesh = MeshAsset.load(mesh_path, fallback_color=fallback_color)
             mesh_center, mesh_radius = mesh.normalize_to_unit_sphere()

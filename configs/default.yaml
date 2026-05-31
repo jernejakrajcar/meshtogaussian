@@ -4,7 +4,7 @@ device:
 
 mesh:
   path: null
-  demo_shape: uv_sphere
+  demo_shape: cube
   color: [0.78, 0.64, 0.42]
 
 camera:

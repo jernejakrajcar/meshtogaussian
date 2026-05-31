@@ -52,10 +52,14 @@ def test_model_discovery_from_source_dir(tmp_path: Path) -> None:
     assert not any(model["name"] == "ignore.txt" for model in models)
 
 
-def test_web_serialization_shapes() -> None:
-    store = ModelStore(logger=StageLogger(False, False))
-    mesh = MeshAsset.create_demo_sphere(segments=8, rings=4)
-    prepared = store.prepare(model_id=None, lod_counts=[10], seed=1)
+def test_web_serialization_shapes(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    mesh_path = source / "tiny.obj"
+    mesh_path.write_text("\n".join(["v 0 0 0", "v 1 0 0", "v 0 1 0", "f 1 2 3"]), encoding="utf-8")
+    store = ModelStore(source_dirs=[source], upload_dir=tmp_path / "uploads", logger=StageLogger(False, False))
+    mesh = MeshAsset.create_demo_cube()
+    prepared = store.prepare(model_id=store.path_to_id(mesh_path), lod_counts=[10], seed=1)
     prepared.mesh = mesh
     serialized = store.serialize_model(prepared)
     lod = store.serialize_lod(prepared, 10)
@@ -85,16 +89,22 @@ def test_fastapi_app_import_when_available() -> None:
     assert app.title == "Mesh-to-Gaussian Visualizer"
 
 
-def test_fastapi_prepare_returns_viewer_transition_config() -> None:
+def test_fastapi_prepare_returns_viewer_transition_config(tmp_path: Path) -> None:
     pytest.importorskip("fastapi")
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
     from src.web.app import create_app
 
-    client = TestClient(create_app("configs/smoke.yaml"))
+    meshes = tmp_path / "meshes"
+    meshes.mkdir(parents=True)
+    mesh_path = meshes / "tiny.obj"
+    mesh_path.write_text("\n".join(["v 0 0 0", "v 1 0 0", "v 0 1 0", "f 1 2 3"]), encoding="utf-8")
+
+    client = TestClient(create_app("configs/smoke.yaml", data_dir=tmp_path))
+    model_id = next(model["id"] for model in client.get("/api/models").json()["models"] if model["name"] == "tiny.obj")
     response = client.post(
         "/api/prepare",
-        json={"model_id": "demo:procedural-sphere", "lod_counts": [10], "seed": 1},
+        json={"model_id": model_id, "lod_counts": [10], "seed": 1},
     )
     assert response.status_code == 200
     payload = response.json()
@@ -440,7 +450,7 @@ def test_frontend_debug_ui_sections_and_hints() -> None:
     assert "Loaded Gaussian LOD" in main
     assert "selectedLodRequestId" in main
     assert 'none.textContent = "Select a source model"' in main
-    assert '!item.id.startsWith("demo:")' in main
+    assert '!item.id.startsWith("demo:")' not in main
     assert "initializeLists();" in main
     assert "Restart the server if it was already running before this update." in main
     assert "custom raw WebGL2 splat renderer" in report
