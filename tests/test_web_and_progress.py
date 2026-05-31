@@ -460,7 +460,7 @@ def test_frontend_debug_ui_sections_and_hints() -> None:
     assert "at 96\\% transition" in report
     assert "Coverage-scaled detail" in report
     assert "\\subsection{Live FPS Display}" in report
-    assert "plant-3146965.ply" in report
+    assert "about 3 million Gaussian splats" in report
     assert "current FPS, average frame time, visible splat count" in report
     assert "formal evaluation table" in report
     assert "window.\\_\\_lastFpsEvaluation" not in report
